@@ -16,25 +16,26 @@ this would allow multiple access points with the same name, and we can select by
 
 import json
 import time
+import os
 
 from micropython import const
 import network
 import webrepl
 
 # Describes the conditions on when to start the AP
-start_ap_always = const(0)
-start_ap_fallback = const(1)
-start_ap_never = const(2)
+START_AP_ALWAYS = const(0)
+START_AP_FALLBACK = const(1)
+START_AP_NEVER = const(2)
 
 # Describes the conditions on when to start the webrepl
-start_wr_connected = const(0)
-start_wr_connected_managed = const(1)
-start_wr_connected_adhoc = const(2)
+START_WR_CONNECTED = const(0)
+START_WR_CONNECTED_MANAGED = const(1)
+START_WR_CONNECTED_ADHOC = const(2)
 
 
 class WifiManager:
-    start_ap = start_ap_fallback  # Only tart if we can't connect (default)
-    start_wr = start_wr_connected  # Start with any connection (default)
+    start_ap = START_AP_FALLBACK  # Only start if we can't connect (default)
+    start_wr = START_WR_CONNECTED  # Start with any connection (default)
 
     @classmethod
     def wlan(cls):
@@ -46,20 +47,20 @@ class WifiManager:
 
     @classmethod
     def wants_accesspoint(cls) -> bool:
-        if cls.start_ap == start_ap_always:
+        if cls.start_ap == START_AP_ALWAYS:
             return True
-        elif cls.start_ap == start_ap_fallback:
+        elif cls.start_ap == START_AP_FALLBACK:
             return not cls.wlan().isconnected()
         else:
             return False
 
     @classmethod
     def wants_webrepl(cls):
-        if cls.start_wr == start_wr_connected:
+        if cls.start_wr == START_WR_CONNECTED:
             return cls.wlan().isconnected() or cls.accesspoint().active()
-        elif cls.start_wr == start_wr_connected_managed:
+        elif cls.start_wr == START_WR_CONNECTED_MANAGED:
             return not cls.wlan().isconnected()
-        elif cls.start_wr == start_wr_connected_adhoc:
+        elif cls.start_wr == START_WR_CONNECTED_ADHOC:
             return not cls.accesspoint().active()
         else:
             return False
@@ -67,8 +68,15 @@ class WifiManager:
     @classmethod
     def setup_network(cls, config_file='/networks.json') -> bool:
         # now see our prioritised list of networks and find the first available network
-        with open(config_file, "r") as f:
-            preferred_networks = json.loads(f.read())
+        try:
+            with open(config_file, "r") as f:
+                config = json.loads(f.read())
+                preferred_networks = config['known_networks']
+                ap_config = config["access_point"]
+        except MyError:
+            print('Error loading config file, no known networks selected')
+            preferred_networks = []
+         
 
         # set things up
         cls.wlan().active(True)
@@ -84,8 +92,11 @@ class WifiManager:
                 if cls.connect_to(network_ssid=preference[0], password=preference[1]):
                     break  # We are connected so don't try more
 
-        # start the access point according to the rules
-        cls.accesspoint().active(cls.wants_accesspoint())
+        # Check if we are to start the access point
+        if cls.wants_accesspoint():  # Only bother setting the config if it WILL be active
+            print("Enabling your access point...")
+            cls.accesspoint().config(**ap_config)
+        cls.accesspoint().active(cls.wants_accesspoint())  # It may be DEACTIVATED here
 
         # start the webrepl according to the rules
         if cls.wants_webrepl():
