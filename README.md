@@ -5,30 +5,35 @@ Simply upload your JSON file with your networks, the default path is '/networks.
 
 The file looks like this:
 
-	{
-		"known_networks": [
-			["Foo-Network", "Bar-Password"],
-			["Backup-Network", "PythonRules"]
-		],
-		"access_point": {
-			"essid": "Micropython-Dev",
-			"channel": 11,
-			"hidden": false,
-			"password": "P@55W0rd"
-		}
-	}
+    {
+        "known_networks": [
+          {
+            "ssid": "HomeNetwork",
+            "password": "XYZ12345",
+            "enables_webrepl": false
+          }
+        ],
+        "access_point": {
+            "essid": "Micropython-Dev",
+            "channel": 11,
+            "hidden": false,
+            "password": "P@55W0rd",
+            "enables_webrepl": true,
+            "start_policy": "fallback"
+        }
+    }
 
 
 Here's an example of how to use the WifiManager.
 
-MicroPython v1.9.2-8-gbf8f45cf on 2017-08-23; ESP module with ESP8266
-Type "help()" for more information.
->>> from wifi_manager import WifiManager
->>> WifiManager.setup_network()
-connecting to network Foo-Network...
-WebREPL daemon started on ws://10.1.1.234:8266
-Started webrepl in normal mode
-True
+    MicroPython v1.9.4 on 2018-05-11; ESP32 module with ESP32
+    Type "help()" for more information.
+    >>> from wifi_manager import WifiManager
+    >>> WifiManager.setup_network()
+    connecting to network Foo-Network...
+    WebREPL daemon started on ws://10.1.1.234:8266
+    Started webrepl in normal mode
+    True
 
 There exist the following class properties:
 * start_ap - When to start the access point, default is fallback when failing to connect to known networks

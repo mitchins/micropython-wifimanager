@@ -1,0 +1,17 @@
+{
+	"known_networks": [
+      {
+        "ssid": "HomeNetwork",
+        "password": "XYZ12345",
+        "enables_webrepl": false
+      }
+	],
+	"access_point": {
+		"essid": "Micropython-Dev",
+		"channel": 11,
+		"hidden": false,
+		"password": "P@55W0rd",
+		"enables_webrepl": true,
+        "start_policy": "fallback"
+	}
+}
