@@ -59,7 +59,7 @@ class WifiManager:
                 if status != network.STAT_CONNECTING:
                     # Do if Idle or error.. not if connecting...
                     cls.setup_network()
-            await asyncio.sleep(30)  # Pause 30s
+            await asyncio.sleep(5)  # Pause 30s
 
     @classmethod
     def wlan(cls):
