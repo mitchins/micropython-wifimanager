@@ -1,7 +1,7 @@
 # micropython-wifimanager
 A simple network configuration utility for MicroPython on boards such as ESP8266 and ESP32.
 
-![System flow](./system_flow.png)
+#### Configuration
 
 Simply upload your JSON file with your networks, the default path is '/networks.json', which is specified in the class property `config_file`.
 
@@ -78,3 +78,7 @@ The WifiManager can be run asynchronously, via the cooperative scheduling that m
 Found a bug, or want a feature? open an issue.
 
 If you want to contribute, create a pull request.
+
+#### System flow
+
+![System flow](./system_flow.png)
