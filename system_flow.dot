@@ -1,0 +1,18 @@
+digraph G {
+  "asynchronous" -> "event loop" [label = "start_managing()"]
+  "event loop" -> "check status" [label = "manage()"]
+  "check status" -> "sleep" [label = "connected"]
+  "check status" -> "read config" [label = "disconnected"]
+  "synchronous" -> "read config" [label = "setup_network()"]
+  "read config" -> "connect" [label = "scan wifi"]
+  "connect" -> "do AP" [label = "finished"]
+  "connect" -> "retry" [label = "error"]
+  "retry" -> "connect" [label = "next"]
+  "retry" -> "do AP" [label = "failed"]
+  "do AP" -> "WebRepl"
+  "WebRepl" -> "sleep" [label = "asynchronous"]
+  "WebRepl" -> "return" [label = "synchronous"]
+  "sleep" -> "event loop"
+
+  {rank = same; "asynchronous"; "event loop"; "synchronous";}
+}
