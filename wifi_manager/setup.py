@@ -10,12 +10,12 @@ from distutils.core import setup
 setup(
   name = 'micropython-wifimanager',
   py_modules = ['wifi_manager'],
-  version = '0.2',
-  description = 'A simple network configuration utility for MicroPython on the ESP-8266 board',
+  version = '0.3',
+  description = 'A simple network configuration utility for MicroPython on the ESP-8266 and ESP-32 boards',
   author = 'Mitchell Currie',
   author_email = 'mitch@mitchellcurrie.com',
   url = 'https://github.com/mitchins/micropython-wifimanager',
-  download_url = 'https://github.com/mitchins/micropython-wifimanager/archive/0.2.tar.gz',
-  keywords = ['micropython', 'esp8266', 'wifi', 'manager'],
+  download_url = 'https://github.com/mitchins/micropython-wifimanager/archive/0.3.tar.gz',
+  keywords = ['micropython', 'esp8266', 'esp32', 'wifi', 'manager'],
   classifiers = [],
 )
