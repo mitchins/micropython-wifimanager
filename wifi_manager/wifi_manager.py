@@ -21,7 +21,11 @@ import os
 # Micropython modules
 import network
 import webrepl
-import uasyncio as asyncio
+try:
+    import uasyncio as asyncio
+except ImportError:
+    pass
+
 # Micropython libraries (install view uPip)
 try:
     import logging
@@ -33,14 +37,9 @@ except ImportError:
     log = type("", (), {"debug": fake_log, "info": fake_log, "warning": fake_log, "error": fake_log,
                             "critical": fake_log})()
 
-CONST_AP_POLICY_NEVER = "never"
-CONST_AP_POLICY_FALLBACK = "fallback"
-CONST_AP_POLICY_ALWAYS = "always"
-
-
 class WifiManager:
     webrepl_triggered = False
-    ap_start_policy = CONST_AP_POLICY_NEVER
+    _ap_start_policy = "never"
     config_file = '/networks.json'
 
     # Starts the managing call as a co-op async activity
@@ -55,11 +54,14 @@ class WifiManager:
     async def manage(cls):
         while True:
             status = cls.wlan().status()
-            if status != network.STAT_GOT_IP:
-                if status != network.STAT_CONNECTING:
-                    # Do if Idle or error.. not if connecting...
-                    cls.setup_network()
-            await asyncio.sleep(5)  # Pause 30s
+            # ESP32 does not currently return
+            if (status != network.STAT_GOT_IP) or \
+            (cls.wlan().ifconfig()[0] == '0.0.0.0'):  # temporary till #3967
+                log.info("Network not connected: managing")
+                # Ignore connecting status for now.. ESP32 is a bit strange
+                # if status != network.STAT_CONNECTING: <- do not care yet
+                cls.setup_network()
+            await asyncio.sleep(10)  # Pause 5 seconds
 
     @classmethod
     def wlan(cls):
@@ -71,9 +73,9 @@ class WifiManager:
 
     @classmethod
     def wants_accesspoint(cls) -> bool:
-        static_policies = {CONST_AP_POLICY_NEVER: False, CONST_AP_POLICY_ALWAYS: True}
-        if cls.ap_start_policy in static_policies:
-            return static_policies[cls.ap_start_policy]
+        static_policies = {"never": False, "always": True}
+        if cls._ap_start_policy in static_policies:
+            return static_policies[cls._ap_start_policy]
         # By default, that leaves "Fallback"
         return cls.wlan().status() != network.STAT_GOT_IP  # Discard intermediate states and check for not connected/ok
 
@@ -85,6 +87,8 @@ class WifiManager:
                 config = json.loads(f.read())
                 cls.preferred_networks = config['known_networks']
                 cls.ap_config = config["access_point"]
+                if config.get("schema", 0) != 2:
+                    log.warning("Did not get expected schema [2] in JSON config.")
         except Exception as e:
             log.error("Failed to load config file, no known networks selected")
             cls.preferred_networks = []
@@ -126,10 +130,12 @@ class WifiManager:
 
 
         # Check if we are to start the access point
-        cls.ap_start_policy = cls.ap_config.get("start_policy", CONST_AP_POLICY_NEVER)
-        if cls.wants_accesspoint():  # Only bother setting the config if it WILL be active
+        cls._ap_start_policy = cls.ap_config.get("start_policy", "never")
+        should_start_ap = cls.wants_accesspoint()
+        cls.accesspoint().active(should_start_ap)
+        if should_start_ap:  # Only bother setting the config if it WILL be active
             log.info("Enabling your access point...")
-            cls.accesspoint().config(**cls.ap_config)
+            cls.accesspoint().config(**cls.ap_config["config"])
         cls.accesspoint().active(cls.wants_accesspoint())  # It may be DEACTIVATED here
 
         # may need to reload the config if access points trigger it

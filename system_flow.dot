@@ -1,0 +1,11 @@
+digraph G {
+  "asynchronous" -> "event loop" [label = "start_managing()"]
+  "event loop" -> "check status" [label = "manage()"]
+  "check status" -> "sleep" [label = "connected"]
+  "check status" -> "scan wifi" [label = "disconnected"]
+  "synchronous" -> "scan wifi" [label = "setup_network()"]
+  "scan wifi" -> "connect"
+  "scan wifi" -> "GraphViz!"
+  "connect" -> "wait"
+  {rank = same; "asynchronous"; "event loop"; "synchronous";}
+}
