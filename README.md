@@ -67,8 +67,10 @@ Here's an example of how to use the WifiManager.
 The WifiManager can be run asynchronously, via the cooperative scheduling that micropthon has in uasyncio. If you call `WifiManager.start_managing()` as follows, it will ensure that periodically the network status is scanned, and connection will be re-established as per preferences as needed.
 
 	import uasyncio as asyncio
+	import logging
 	from wifi_manager import WifiManager
 
+	logging.basicConfig(level=logging.WARNING)
 	WifiManager.start_managing()
 	asyncio.get_event_loop().run_forever()
 
