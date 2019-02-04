@@ -126,6 +126,7 @@ class WifiManager:
             if cls.connect_to(ssid=new_connection["ssid"], password=new_connection["password"],
                               bssid=new_connection["bssid"]):
                 log.info("Successfully connected {0}".format(new_connection["ssid"]))
+                cls.webrepl_triggered = new_connection["enables_webrepl"]
                 break  # We are connected so don't try more
 
 
@@ -136,6 +137,7 @@ class WifiManager:
         if should_start_ap:  # Only bother setting the config if it WILL be active
             log.info("Enabling your access point...")
             cls.accesspoint().config(**cls.ap_config["config"])
+            cls.webrepl_triggered = cls.ap_config["enables_webrepl"]
         cls.accesspoint().active(cls.wants_accesspoint())  # It may be DEACTIVATED here
 
         # may need to reload the config if access points trigger it
