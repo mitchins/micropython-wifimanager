@@ -4,11 +4,12 @@ import sys
 sys.path.pop(0)
 from setuptools import setup
 sys.path.append("..")
-#import optimize_upip
+import sdist_upip
 
 from distutils.core import setup
 setup(
   name = 'micropython-wifimanager',
+  cmdclass={'sdist': sdist_upip.sdist},
   py_modules = ['wifi_manager'],
   version = '0.3.4',
   description = 'A simple network configuration utility for MicroPython on the ESP-8266 and ESP-32 boards',
