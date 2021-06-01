@@ -20,7 +20,10 @@ import os
 
 # Micropython modules
 import network
-import webrepl
+try:
+    import webrepl
+except ImportError:
+    pass
 try:
     import uasyncio as asyncio
 except ImportError:
@@ -144,7 +147,11 @@ class WifiManager:
 
         # start the webrepl according to the rules
         if cls.webrepl_triggered:
-            webrepl.start()
+            try:
+                webrepl.start()
+            except NameError:
+                # Log error here (not after import) to not log it if webrepl is not configured to start.
+                log.error("Failed to start webrepl, module is not available.")
 
         # return the success status, which is ultimately if we connected to managed and not ad hoc wifi.
         return cls.wlan().isconnected()
