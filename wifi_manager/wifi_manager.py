@@ -44,6 +44,83 @@ class WifiManager:
     webrepl_triggered = False
     _ap_start_policy = "never"
     config_file = '/networks.json'
+    _config_server_enabled = False
+    _config_server_password = "micropython"
+    
+    # Minimal HTML for config interface
+    _config_html = """<!DOCTYPE html>
+<html><head><title>WiFi Manager Config</title>
+<style>body{font-family:Arial,sans-serif;margin:20px;}textarea{width:100%;}</style>
+</head><body>
+<h2>WiFi Manager Configuration</h2>
+<textarea id="config" rows="25" placeholder="Loading configuration..."></textarea><br><br>
+<button onclick="loadConfig()">Reload Config</button>
+<button onclick="saveConfig()">Save & Apply</button>
+<button onclick="testConfig()">Validate JSON</button><br><br>
+<div id="status"></div>
+
+<script>
+function setStatus(msg, isError) {
+    const status = document.getElementById('status');
+    status.innerHTML = msg;
+    status.style.color = isError ? 'red' : 'green';
+}
+
+function loadConfig() {
+    fetch('/config')
+        .then(response => response.text())
+        .then(data => {
+            try {
+                const formatted = JSON.stringify(JSON.parse(data), null, 2);
+                document.getElementById('config').value = formatted;
+                setStatus('Configuration loaded successfully');
+            } catch(e) {
+                document.getElementById('config').value = data;
+                setStatus('Loaded raw config (JSON parse failed)', true);
+            }
+        })
+        .catch(e => setStatus('Failed to load config: ' + e, true));
+}
+
+function testConfig() {
+    try {
+        const config = document.getElementById('config').value;
+        const parsed = JSON.parse(config);
+        if (!parsed.known_networks || !parsed.access_point) {
+            throw new Error('Missing required sections');
+        }
+        setStatus('JSON is valid!');
+    } catch(e) {
+        setStatus('JSON Error: ' + e.message, true);
+    }
+}
+
+function saveConfig() {
+    const configText = document.getElementById('config').value;
+    try {
+        JSON.parse(configText); // Validate first
+    } catch(e) {
+        setStatus('Cannot save: Invalid JSON - ' + e.message, true);
+        return;
+    }
+    
+    fetch('/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: configText
+    })
+    .then(response => response.text())
+    .then(data => {
+        setStatus('Configuration saved! Device will reconnect with new settings...');
+        setTimeout(loadConfig, 3000); // Reload after reconnection
+    })
+    .catch(e => setStatus('Save failed: ' + e, true));
+}
+
+// Load config on page load
+loadConfig();
+</script>
+</body></html>"""
 
     # Starts the managing call as a co-op async activity
     @classmethod
@@ -90,6 +167,14 @@ class WifiManager:
                 config = json.loads(f.read())
                 cls.preferred_networks = config['known_networks']
                 cls.ap_config = config["access_point"]
+                
+                # Check for config server settings
+                if "config_server" in config:
+                    server_config = config["config_server"]
+                    if server_config.get("enabled", False):
+                        password = server_config.get("password", "micropython")
+                        cls.start_config_server(password)
+                
                 if config.get("schema", 0) != 2:
                     log.warning("Did not get expected schema [2] in JSON config.")
         except Exception as e:
@@ -187,3 +272,157 @@ class WifiManager:
                 break
             time.sleep_ms(500)
         return False
+
+    @classmethod
+    def _check_basic_auth(cls, request):
+        """Check HTTP Basic Authentication"""
+        if not cls._config_server_password:
+            return True  # No password required
+            
+        auth_header = None
+        for line in request.split('\r\n'):
+            if line.lower().startswith('authorization: basic '):
+                auth_header = line.split(' ', 2)[2]
+                break
+        
+        if not auth_header:
+            return False
+            
+        try:
+            # Decode base64 credentials
+            import ubinascii
+            decoded = ubinascii.a2b_base64(auth_header).decode()
+            if ':' in decoded:
+                username, password = decoded.split(':', 1)
+                return password == cls._config_server_password
+        except:
+            pass
+        return False
+
+    @classmethod
+    def _handle_config_request(cls, request):
+        """Handle HTTP request for config server"""
+        try:
+            # Check authentication
+            if not cls._check_basic_auth(request):
+                return "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"WiFi Config\"\r\nContent-Type: text/plain\r\n\r\nAuthentication required"
+            
+            if 'GET /' in request or 'GET /index' in request:
+                # Serve HTML interface
+                return f"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n{cls._config_html}"
+                
+            elif 'GET /config' in request:
+                # Serve current configuration
+                try:
+                    with open(cls.config_file, 'r') as f:
+                        config_data = f.read()
+                    return f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{config_data}"
+                except Exception as e:
+                    return f"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to read config: {e}"
+                    
+            elif 'POST /config' in request:
+                # Update configuration
+                try:
+                    # Extract JSON from POST body
+                    body_start = request.find('\r\n\r\n')
+                    if body_start == -1:
+                        return "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nNo request body"
+                    
+                    new_config = request[body_start + 4:]
+                    
+                    # Validate JSON
+                    import json
+                    parsed_config = json.loads(new_config)
+                    
+                    # Basic validation
+                    if 'known_networks' not in parsed_config or 'access_point' not in parsed_config:
+                        return "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nInvalid config structure"
+                    
+                    # Save new configuration
+                    with open(cls.config_file, 'w') as f:
+                        f.write(new_config)
+                    
+                    log.info("Configuration updated via web interface")
+                    
+                    # Restart network setup with new config
+                    try:
+                        cls.setup_network()
+                    except Exception as setup_error:
+                        log.warning(f"Network setup failed after config update: {setup_error}")
+                    
+                    return "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nConfiguration updated successfully"
+                    
+                except json.JSONDecodeError as e:
+                    return f"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nInvalid JSON: {e}"
+                except Exception as e:
+                    return f"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nUpdate failed: {e}"
+            
+            else:
+                return "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nNot found"
+                
+        except Exception as e:
+            log.error(f"Config server error: {e}")
+            return f"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nServer error: {e}"
+
+    @classmethod
+    async def _run_config_server(cls):
+        """Run the configuration web server"""
+        try:
+            import socket
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_socket.bind(('0.0.0.0', 8080))
+            server_socket.listen(1)
+            server_socket.settimeout(1.0)  # Non-blocking with timeout
+            
+            log.info("Config server started on port 8080")
+            
+            while cls._config_server_enabled:
+                try:
+                    conn, addr = server_socket.accept()
+                    log.debug(f"Config server connection from {addr}")
+                    
+                    # Read request with timeout
+                    conn.settimeout(5.0)
+                    request = conn.recv(4096).decode()
+                    
+                    # Handle request
+                    response = cls._handle_config_request(request)
+                    
+                    # Send response
+                    conn.send(response.encode())
+                    conn.close()
+                    
+                except OSError:
+                    # Timeout or no connection - yield control
+                    await asyncio.sleep_ms(100)
+                except Exception as e:
+                    log.warning(f"Config server request error: {e}")
+                    
+            server_socket.close()
+            log.info("Config server stopped")
+            
+        except Exception as e:
+            log.error(f"Config server failed to start: {e}")
+
+    @classmethod
+    def start_config_server(cls, password="micropython"):
+        """Start the configuration web server"""
+        if not asyncio:
+            log.error("Config server requires asyncio")
+            return False
+            
+        cls._config_server_password = password
+        cls._config_server_enabled = True
+        
+        # Start server as async task
+        loop = asyncio.get_event_loop()
+        loop.create_task(cls._run_config_server())
+        
+        log.info("Config server starting on http://[device-ip]:8080")
+        return True
+
+    @classmethod
+    def stop_config_server(cls):
+        """Stop the configuration web server"""
+        cls._config_server_enabled = False
