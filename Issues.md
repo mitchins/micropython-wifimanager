@@ -74,3 +74,142 @@
 4. Consider release tag for new features
 
 All responses are ready to copy/paste after hardware testing confirms the fixes work!
+
+## Hardware Testing Plan
+
+### **Pre-Test Setup**
+```bash
+# 1. Flash latest MicroPython 1.24.0 for ESP32-C6
+# 2. Copy develop branch files to device:
+#    - wifi_manager/wifi_manager.py → /lib/wifi_manager.py
+#    - Create test networks.json
+```
+
+### **Core Functionality Tests (30 minutes)**
+
+#### **Test 1: Basic Installation & Import**
+```python
+# Test the packaging fixes (Issues #1, #4)
+import upip
+upip.install('micropython-wifimanager')  # Should work without errors
+
+# Or manual test:
+from wifi_manager import WifiManager
+print("✅ Import successful")
+```
+
+#### **Test 2: Hardware Compatibility (Issue #3)**
+```python
+# Test OSError handling on ESP32-C6
+WifiManager.setup_network()  # Should not crash with traceback
+# Watch for graceful error messages instead of crashes
+```
+
+#### **Test 3: Connection Scenarios**
+```json
+// Create /networks.json with known good + bad networks
+{
+  "schema": 2,
+  "known_networks": [
+    {"ssid": "YourActualWiFi", "password": "realpass", "enables_webrepl": false},
+    {"ssid": "NonExistentNetwork", "password": "fake", "enables_webrepl": false}
+  ],
+  "access_point": {
+    "config": {"essid": "ESP32-Test", "password": "testpass123"},
+    "enables_webrepl": false,
+    "start_policy": "fallback"
+  }
+}
+```
+
+```python
+# Test connection flow
+result = WifiManager.setup_network()
+print(f"Setup result: {result}")
+# Verify: connects to real network OR falls back to AP
+```
+
+### **New Features Tests (20 minutes)**
+
+#### **Test 4: Connection Callbacks (Issue #6)**
+```python
+events = []
+def test_callback(event, **kwargs):
+    events.append(f"{event}: {kwargs}")
+    print(f"📡 {event}: {kwargs}")
+
+WifiManager.on_connection_change(test_callback)
+
+# Trigger events by:
+# 1. Connecting to WiFi
+# 2. Manually disconnect (turn off router briefly)  
+# 3. Check events list has 'connected' and 'disconnected'
+```
+
+#### **Test 5: Web Config Interface (Issue #7)**
+```json
+// Add to networks.json
+"config_server": {"enabled": true, "password": "testpass"}
+```
+
+```python
+WifiManager.setup_network()  # Should auto-start web server
+# Then browse to http://[esp32-ip]:8080
+# Login: admin / testpass
+# Verify: can load and save config
+```
+
+### **Async Management Test (10 minutes)**
+
+#### **Test 6: Long-running Async Management**
+```python
+import uasyncio as asyncio
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
+# Test callback + web server + async management together
+WifiManager.on_connection_change(test_callback)
+WifiManager.start_managing()
+
+# Let run for 2-3 minutes, watch for:
+# - No crashes or memory leaks
+# - Periodic connection checks (every 10s)
+# - Web server remains responsive
+asyncio.get_event_loop().run_forever()
+```
+
+### **Pass/Fail Criteria**
+
+#### **✅ PASS Requirements:**
+- [ ] No import/installation errors (fixes #1, #4)
+- [ ] No OSError crashes on network operations (fixes #3)
+- [ ] Successfully connects to real WiFi OR falls back to AP
+- [ ] Callbacks fire for connection state changes (#6)
+- [ ] Web interface loads and can edit config (#7)
+- [ ] Async management runs without crashes for 3+ minutes
+
+#### **❌ FAIL Conditions:**
+- Crashes with unhandled OSError
+- Web server returns 500 errors
+- Callbacks not firing on state changes
+- Memory leaks or hanging in async loop
+- Cannot connect to any networks and no AP fallback
+
+### **Quick Validation Commands**
+```python
+# After each test, run this health check:
+import gc
+print(f"Free memory: {gc.mem_free()}")
+print(f"Connected: {WifiManager.wlan().isconnected()}")
+print(f"Callbacks registered: {len(WifiManager._connection_callbacks)}")
+print(f"Config server running: {WifiManager._config_server_enabled}")
+```
+
+### **Expected Results**
+- **Total test time: ~60 minutes**
+- **All 6 GitHub issues validated**  
+- **New features working on real hardware**
+- **Ready to merge develop → master**
+
+If everything passes, you'll have confidence that the **8 commits of improvements** work in the real world! 🚀
