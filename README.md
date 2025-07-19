@@ -85,18 +85,36 @@ If you want to contribute, create a pull request.
 
 ```mermaid
 graph TD
-    A[Asynchronous] -- start_managing --> B[Event Loop]
-    C[Synchronous] -- setup_network --> D[Read Config]
-    B -- manage --> E[Check Status]
-    E -- connected --> F[Sleep]
+    A[Asynchronous Entry] -- start_managing --> B[Event Loop]
+    C[Synchronous Entry] -- setup_network --> D[Load Config File]
+    
+    B -- manage --> E[Check Connection Status]
+    E -- connected --> F[Sleep 10s]
     E -- disconnected --> D
-    D -- scan wifi --> G[Connect]
-    G -- finished --> H[Do AP]
-    G -- error --> I[Retry]
-    I -- next --> G
-    I -- failed --> H
-    H --> J[WebREPL]
-    J -- asynchronous --> F
-    J -- synchronous --> K[Return]
+    
+    D -- success --> G[Activate WLAN]
+    D -- file error --> D1[Use Default Config]
+    D1 --> G
+    
+    G --> H[Scan Available Networks]
+    H -- scan success --> I[Match & Rank Candidates]
+    H -- scan error --> M[Configure AP]
+    
+    I --> J[Try Next Candidate]
+    J -- has candidate --> K[Attempt Connection]
+    J -- no candidates --> M
+    
+    K -- connected --> M
+    K -- failed --> J
+    
+    M[Configure Access Point] --> N[Determine WebREPL Policy]
+    N --> O[Start WebREPL?]
+    O -- yes --> P[Start WebREPL]
+    O -- no --> Q[Complete]
+    P --> Q
+    
+    Q -- asynchronous --> F
+    Q -- synchronous --> R[Return Success Status]
+    
     F --> B
 ```
