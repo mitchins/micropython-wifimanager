@@ -53,7 +53,7 @@ A sample configuration may look like this:
 		* 'never' - The AP will not be started under any condition
 * **config_server**: optional web configuration interface settings
 	* enabled - boolean to enable/disable the web config interface
-	* password - password for HTTP Basic Authentication (username can be anything)
+	* password - password for HTTP Basic Authentication (username is "admin")
 
 #### Simple usage (one shot)
 
@@ -107,7 +107,7 @@ WifiManager.start_config_server("your-password")
 **Usage:**
 1. Connect to your device's network (either managed network or AP)
 2. Open browser to `http://[device-ip]:8080`
-3. Enter any username and your configured password
+3. Enter username "admin" and your configured password
 4. Edit JSON configuration in the web interface
 5. Click "Save & Apply" to update and restart networking
 
