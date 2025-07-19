@@ -118,6 +118,43 @@ WifiManager.start_config_server("your-password")
 - Works with any modern browser
 - Integrated with async event loop
 
+#### Connection state callbacks
+
+WifiManager can notify your application when the WiFi connection state changes, allowing you to respond to connectivity events in real-time.
+
+**Register a callback:**
+```python
+def my_connection_handler(event, **kwargs):
+    if event == 'connected':
+        print(f"Connected to {kwargs.get('ssid')} with IP {kwargs.get('ip')}")
+        # Turn on LED, start data collection, etc.
+    elif event == 'disconnected':
+        print("Lost WiFi connection")
+        # Turn off LED, pause operations, etc.
+    elif event == 'ap_started':
+        print(f"Started access point: {kwargs.get('essid')}")
+        # Different LED color for AP mode
+    elif event == 'connection_failed':
+        print(f"Failed to connect to: {kwargs.get('attempted_networks')}")
+        # Log failure, try alternative approach
+
+from wifi_manager import WifiManager
+WifiManager.on_connection_change(my_connection_handler)
+WifiManager.start_managing()
+```
+
+**Available events:**
+- `connected` - Successfully connected to a network (includes `ssid` and `ip`)
+- `disconnected` - Lost connection to network
+- `ap_started` - Access point was activated (includes `essid`)
+- `connection_failed` - All connection attempts failed (includes `attempted_networks`)
+
+**Features:**
+- Multiple callbacks supported
+- Automatic state change detection
+- Exception handling in callbacks won't crash the manager
+- Callbacks can be added/removed dynamically
+
 
 #### Contribution
 

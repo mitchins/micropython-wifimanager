@@ -46,6 +46,8 @@ class WifiManager:
     config_file = '/networks.json'
     _config_server_enabled = False
     _config_server_password = "micropython"
+    _connection_callbacks = []
+    _last_connection_state = None
     
     # Minimal HTML for config interface
     _config_html = """<!DOCTYPE html>
@@ -133,6 +135,9 @@ loadConfig();
     @classmethod
     async def manage(cls):
         while True:
+            # Check for connection state changes and notify callbacks
+            cls._check_and_notify_connection_state()
+            
             status = cls.wlan().status()
             # ESP32 does not currently return
             if (status != network.STAT_GOT_IP) or \
@@ -219,6 +224,7 @@ loadConfig();
                         "enables_webrepl": aPreference["enables_webrepl"]}
                     candidates.append(connection_data)
 
+        connected = False
         for new_connection in candidates:
             log.info("Attempting to connect to network {0}...".format(new_connection["ssid"]))
             # Micropython 1.9.3+ supports BSSID specification so let's use that
@@ -226,7 +232,25 @@ loadConfig();
                               bssid=new_connection["bssid"]):
                 log.info("Successfully connected {0}".format(new_connection["ssid"]))
                 cls.webrepl_triggered = new_connection["enables_webrepl"]
+                
+                # Notify successful connection
+                try:
+                    ifconfig = cls.wlan().ifconfig()
+                    ip = ifconfig[0] if ifconfig else "unknown"
+                    cls._notify_connection_change("connected", ssid=new_connection["ssid"], ip=ip)
+                except Exception as e:
+                    log.warning(f"Failed to notify connection: {e}")
+                
+                connected = True
                 break  # We are connected so don't try more
+        
+        # If no connection was successful and we have candidates, notify failure
+        if not connected and candidates:
+            try:
+                failed_ssids = [c["ssid"] for c in candidates]
+                cls._notify_connection_change("connection_failed", attempted_networks=failed_ssids)
+            except Exception as e:
+                log.warning(f"Failed to notify connection failure: {e}")
 
 
         # Check if we are to start the access point
@@ -238,6 +262,14 @@ loadConfig();
                 log.info("Enabling your access point...")
                 cls.accesspoint().config(**cls.ap_config["config"])
                 cls.webrepl_triggered = cls.ap_config["enables_webrepl"]
+                
+                # Notify AP started
+                try:
+                    essid = cls.ap_config["config"].get("essid", "unknown")
+                    cls._notify_connection_change("ap_started", essid=essid)
+                except Exception as e:
+                    log.warning(f"Failed to notify AP start: {e}")
+                    
             cls.accesspoint().active(cls.wants_accesspoint())  # It may be DEACTIVATED here
         except OSError as e:
             log.error("Failed to configure access point: {}".format(e))
@@ -426,3 +458,76 @@ loadConfig();
     def stop_config_server(cls):
         """Stop the configuration web server"""
         cls._config_server_enabled = False
+
+    @classmethod
+    def on_connection_change(cls, callback):
+        """Register a callback function for connection state changes
+        
+        Callback will be called with (event, **kwargs) where event is one of:
+        - 'connected': Successfully connected to a network
+        - 'disconnected': Lost connection to network  
+        - 'ap_started': Access point was activated
+        - 'connection_failed': All connection attempts failed
+        
+        Example:
+            def my_callback(event, **kwargs):
+                if event == 'connected':
+                    print(f"Connected to {kwargs.get('ssid')} with IP {kwargs.get('ip')}")
+                elif event == 'disconnected':
+                    print("Lost connection")
+            
+            WifiManager.on_connection_change(my_callback)
+        """
+        if callback not in cls._connection_callbacks:
+            cls._connection_callbacks.append(callback)
+            log.debug(f"Registered connection callback: {callback}")
+
+    @classmethod 
+    def remove_connection_callback(cls, callback):
+        """Remove a previously registered connection callback"""
+        if callback in cls._connection_callbacks:
+            cls._connection_callbacks.remove(callback)
+            log.debug(f"Removed connection callback: {callback}")
+
+    @classmethod
+    def _notify_connection_change(cls, event, **kwargs):
+        """Notify all registered callbacks of a connection state change"""
+        log.debug(f"Connection event: {event} with args: {kwargs}")
+        
+        for callback in cls._connection_callbacks:
+            try:
+                callback(event, **kwargs)
+            except Exception as e:
+                log.warning(f"Connection callback error: {e}")
+        
+        # Update last known state for state change detection
+        cls._last_connection_state = event
+
+    @classmethod
+    def _check_and_notify_connection_state(cls):
+        """Check current connection state and notify if changed"""
+        try:
+            is_connected = cls.wlan().isconnected()
+            current_state = "connected" if is_connected else "disconnected"
+            
+            # Only notify on state changes
+            if cls._last_connection_state != current_state:
+                if is_connected:
+                    # Get connection details
+                    ifconfig = cls.wlan().ifconfig()
+                    ip = ifconfig[0] if ifconfig else "unknown"
+                    # Try to get connected SSID (not all MicroPython versions support this)
+                    ssid = "unknown"
+                    try:
+                        config = cls.wlan().config('ssid')
+                        if config:
+                            ssid = config
+                    except:
+                        pass
+                    
+                    cls._notify_connection_change("connected", ssid=ssid, ip=ip)
+                else:
+                    cls._notify_connection_change("disconnected")
+                    
+        except Exception as e:
+            log.warning(f"Connection state check failed: {e}")
