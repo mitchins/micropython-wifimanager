@@ -30,6 +30,10 @@ A sample configuration may look like this:
 			},
 			"enables_webrepl": true,
 			"start_policy": "fallback"
+		},
+		"config_server": {
+			"enabled": false,
+			"password": "micropython"
 		}
 	}
 
@@ -47,6 +51,9 @@ A sample configuration may look like this:
 		* 'always' - regardless of the connection to any base station, AP will be started
 		* 'fallback' - the AP will only be started if no network could be connected to
 		* 'never' - The AP will not be started under any condition
+* **config_server**: optional web configuration interface settings
+	* enabled - boolean to enable/disable the web config interface
+	* password - password for HTTP Basic Authentication (username can be anything)
 
 #### Simple usage (one shot)
 
@@ -73,6 +80,43 @@ The WifiManager can be run asynchronously, via the cooperative scheduling that m
 	logging.basicConfig(level=logging.WARNING)
 	WifiManager.start_managing()
 	asyncio.get_event_loop().run_forever()
+
+#### Web configuration interface
+
+For easier configuration management, WifiManager includes an optional web interface that allows you to view and edit the configuration remotely through a browser.
+
+**Enable in configuration:**
+```json
+{
+	"schema": 2,
+	"known_networks": [...],
+	"access_point": {...},
+	"config_server": {
+		"enabled": true,
+		"password": "your-password-here"
+	}
+}
+```
+
+**Manual start:**
+```python
+from wifi_manager import WifiManager
+WifiManager.start_config_server("your-password")
+```
+
+**Usage:**
+1. Connect to your device's network (either managed network or AP)
+2. Open browser to `http://[device-ip]:8080`
+3. Enter any username and your configured password
+4. Edit JSON configuration in the web interface
+5. Click "Save & Apply" to update and restart networking
+
+**Features:**
+- Live JSON validation
+- Automatic network restart after changes
+- HTTP Basic Authentication protection
+- Works with any modern browser
+- Integrated with async event loop
 
 
 #### Contribution
