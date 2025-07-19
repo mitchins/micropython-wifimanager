@@ -85,18 +85,18 @@ If you want to contribute, create a pull request.
 
 ```mermaid
 graph TD
-    A[Asynchronous] -->|start_managing()| B[Event Loop]
-    C[Synchronous] -->|setup_network()| D[Read Config]
-    B -->|manage()| E[Check Status]
-    E -->|connected| F[Sleep]
-    E -->|disconnected| D
-    D -->|scan wifi| G[Connect]
-    G -->|finished| H[Do AP]
-    G -->|error| I[Retry]
-    I -->|next| G
-    I -->|failed| H
+    A[Asynchronous] -- start_managing --> B[Event Loop]
+    C[Synchronous] -- setup_network --> D[Read Config]
+    B -- manage --> E[Check Status]
+    E -- connected --> F[Sleep]
+    E -- disconnected --> D
+    D -- scan wifi --> G[Connect]
+    G -- finished --> H[Do AP]
+    G -- error --> I[Retry]
+    I -- next --> G
+    I -- failed --> H
     H --> J[WebREPL]
-    J -->|asynchronous| F
-    J -->|synchronous| K[Return]
+    J -- asynchronous --> F
+    J -- synchronous --> K[Return]
     F --> B
 ```
