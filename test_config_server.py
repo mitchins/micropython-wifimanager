@@ -61,7 +61,7 @@ class MockWifiManager:
             decoded = base64.b64decode(encoded).decode()
             if ':' in decoded:
                 username, password = decoded.split(':', 1)
-                return password == cls._config_server_password
+                return username == "admin" and password == cls._config_server_password
         except:
             pass
         return False
@@ -164,7 +164,7 @@ if __name__ == '__main__':
     
     server = HTTPServer(('localhost', 8080), ConfigServerHandler)
     print("Test config server running at: http://localhost:8080")
-    print("Username: any")
+    print("Username: admin")
     print("Password: testpass")
     print("Press Ctrl+C to stop")
     

@@ -294,7 +294,7 @@ loadConfig();
             decoded = ubinascii.a2b_base64(auth_header).decode()
             if ':' in decoded:
                 username, password = decoded.split(':', 1)
-                return password == cls._config_server_password
+                return username == "admin" and password == cls._config_server_password
         except:
             pass
         return False
