@@ -64,7 +64,7 @@ class WifiManager:
                 # Ignore connecting status for now.. ESP32 is a bit strange
                 # if status != network.STAT_CONNECTING: <- do not care yet
                 cls.setup_network()
-            await asyncio.sleep(10)  # Pause 5 seconds
+            await asyncio.sleep(10)  # Pause 10 seconds between checks
 
     @classmethod
     def wlan(cls):
@@ -93,21 +93,32 @@ class WifiManager:
                 if config.get("schema", 0) != 2:
                     log.warning("Did not get expected schema [2] in JSON config.")
         except Exception as e:
-            log.error("Failed to load config file, no known networks selected")
+            log.error("Failed to load config file: {}. No known networks selected".format(e))
             cls.preferred_networks = []
-            return
+            cls.ap_config = {"config": {"essid": "MicroPython-AP", "password": "micropython"}, 
+                           "enables_webrepl": False, "start_policy": "never"}
+            return False
 
         # set things up
         cls.webrepl_triggered = False  # Until something wants it
         cls.wlan().active(True)
 
-        # scan what’s available
+        # scan what's available
         available_networks = []
-        for network in cls.wlan().scan():
-            ssid = network[0].decode("utf-8")
-            bssid = network[1]
-            strength = network[3]
-            available_networks.append(dict(ssid=ssid, bssid=bssid, strength=strength))
+        try:
+            scan_results = cls.wlan().scan()
+            for network in scan_results:
+                try:
+                    ssid = network[0].decode("utf-8")
+                    bssid = network[1]
+                    strength = network[3]
+                    available_networks.append(dict(ssid=ssid, bssid=bssid, strength=strength))
+                except (IndexError, UnicodeDecodeError) as e:
+                    log.warning("Failed to parse network scan result: {}".format(e))
+                    continue
+        except OSError as e:
+            log.error("Network scan failed: {}".format(e))
+            return False
         # Sort fields by strongest first in case of multiple SSID access points
         available_networks.sort(key=lambda station: station["strength"], reverse=True)
 
@@ -136,12 +147,15 @@ class WifiManager:
         # Check if we are to start the access point
         cls._ap_start_policy = cls.ap_config.get("start_policy", "never")
         should_start_ap = cls.wants_accesspoint()
-        cls.accesspoint().active(should_start_ap)
-        if should_start_ap:  # Only bother setting the config if it WILL be active
-            log.info("Enabling your access point...")
-            cls.accesspoint().config(**cls.ap_config["config"])
-            cls.webrepl_triggered = cls.ap_config["enables_webrepl"]
-        cls.accesspoint().active(cls.wants_accesspoint())  # It may be DEACTIVATED here
+        try:
+            cls.accesspoint().active(should_start_ap)
+            if should_start_ap:  # Only bother setting the config if it WILL be active
+                log.info("Enabling your access point...")
+                cls.accesspoint().config(**cls.ap_config["config"])
+                cls.webrepl_triggered = cls.ap_config["enables_webrepl"]
+            cls.accesspoint().active(cls.wants_accesspoint())  # It may be DEACTIVATED here
+        except OSError as e:
+            log.error("Failed to configure access point: {}".format(e))
 
         # may need to reload the config if access points trigger it
 
@@ -158,10 +172,18 @@ class WifiManager:
 
     @classmethod
     def connect_to(cls, *, ssid, password, **kwargs) -> bool:
-        cls.wlan().connect(ssid, password, **kwargs)
+        try:
+            cls.wlan().connect(ssid, password, **kwargs)
+        except OSError as e:
+            log.error("Failed to initiate connection to {}: {}".format(ssid, e))
+            return False
 
         for check in range(0, 10):  # Wait a maximum of 10 times (10 * 500ms = 5 seconds) for success
-            if cls.wlan().isconnected():
-                return True
+            try:
+                if cls.wlan().isconnected():
+                    return True
+            except OSError as e:
+                log.warning("Connection check failed for {}: {}".format(ssid, e))
+                break
             time.sleep_ms(500)
         return False

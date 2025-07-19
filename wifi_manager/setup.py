@@ -4,12 +4,15 @@ import sys
 sys.path.pop(0)
 from setuptools import setup
 sys.path.append("..")
-import sdist_upip
 
-from distutils.core import setup
+try:
+    import sdist_upip
+except ImportError:
+    # Fallback for environments without sdist_upip
+    sdist_upip = None
 setup(
   name = 'micropython-wifimanager',
-  cmdclass={'sdist': sdist_upip.sdist},
+  cmdclass={'sdist': sdist_upip.sdist} if sdist_upip else {},
   py_modules = ['wifi_manager'],
   version = '0.3.6',
   description = 'A simple network configuration utility for MicroPython on the ESP-8266 and ESP-32 boards',
@@ -18,7 +21,7 @@ setup(
   author = 'Mitchell Currie',
   author_email = 'mitch@mitchellcurrie.com',
   url = 'https://github.com/mitchins/micropython-wifimanager',
-  download_url = 'https://github.com/mitchins/micropython-wifimanager/archive/0.3.4.tar.gz',
+  download_url = 'https://github.com/mitchins/micropython-wifimanager/archive/0.3.6.tar.gz',
   keywords = ['micropython', 'esp8266', 'esp32', 'wifi', 'manager'],
   classifiers = [],
 )
