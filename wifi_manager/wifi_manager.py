@@ -13,6 +13,7 @@ this would allow multiple access points with the same name, and we can select by
 
 
 """
+__version__ = "1.0.0"
 
 import json
 import time
@@ -291,9 +292,8 @@ loadConfig();
         if cls.webrepl_triggered:
             try:
                 webrepl.start()
-            except NameError:
-                # Log error here (not after import) to not log it if webrepl is not configured to start.
-                log.error("Failed to start webrepl, module is not available.")
+            except (NameError, TypeError) as e:
+                log.warning(f"Could not start WebREPL: {e}")
 
         # return the success status, which is ultimately if we connected to managed and not ad hoc wifi.
         return cls.wlan().isconnected()
@@ -343,69 +343,125 @@ loadConfig();
         return False
 
     @classmethod
-    def _handle_config_request(cls, request):
-        """Handle HTTP request for config server"""
-        try:
-            # Check authentication
-            if not cls._check_basic_auth(request):
-                return "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"WiFi Config\"\r\nContent-Type: text/plain\r\n\r\nAuthentication required"
-            
-            if 'GET /' in request or 'GET /index' in request:
-                # Serve HTML interface
-                return f"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n{cls._config_html}"
-                
-            elif 'GET /config' in request:
-                # Serve current configuration
+    def _handle_config_request(cls, request: str) -> str:
+        """
+        Handle HTTP requests for the configuration web server.
+        Supports:
+          - GET /config       → returns JSON config
+          - POST /config      → updates JSON config
+          - GET / or /index   → returns HTML editor
+        Requires Basic Auth username “admin” and password cls._config_server_password,
+        unless password is None or empty (in which case auth is skipped).
+        """
+        # 1) Authentication
+        if cls._config_server_password:
+            # look for “Authorization: Basic …”
+            auth = None
+            for line in request.split('\r\n'):
+                if line.lower().startswith("authorization: basic "):
+                    auth = line.split(" ", 2)[2]
+                    break
+            if not auth:
+                return (
+                    "HTTP/1.1 401 Unauthorized\r\n"
+                    "WWW-Authenticate: Basic realm=\"WiFi Config\"\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "\r\n"
+                    "Authentication required"
+                )
+            # decode and verify
+            try:
+                import ubinascii
+                user_pass = ubinascii.a2b_base64(auth).decode()
+                user, pwd = user_pass.split(":", 1)
+                if user != "admin" or pwd != cls._config_server_password:
+                    raise ValueError
+            except Exception:
+                return (
+                    "HTTP/1.1 401 Unauthorized\r\n"
+                    "WWW-Authenticate: Basic realm=\"WiFi Config\"\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "\r\n"
+                    "Invalid credentials"
+                )
+
+        # 2) POST /config → update config
+        if request.startswith("POST /config"):
+            # extract body
+            idx = request.find("\r\n\r\n")
+            if idx < 0:
+                return "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nNo request body"
+            body = request[idx+4:]
+            # parse JSON
+            try:
+                import json
+                cfg = json.loads(body)
+                if "known_networks" not in cfg or "access_point" not in cfg:
+                    raise ValueError("Missing required keys")
+            except ValueError as ve:
+                return (
+                    "HTTP/1.1 400 Bad Request\r\n"
+                    "Content-Type: text/plain\r\n"
+                    f"\r\nInvalid JSON: {ve}"
+                )
+            except Exception as e:
+                return (
+                    "HTTP/1.1 400 Bad Request\r\n"
+                    "Content-Type: text/plain\r\n"
+                    f"\r\nJSON parse error: {e}"
+                )
+            # write file
+            try:
+                with open(cls.config_file, "w") as f:
+                    f.write(body)
+                log.info("Configuration updated via web interface")
+                # reconfigure network immediately
                 try:
-                    with open(cls.config_file, 'r') as f:
-                        config_data = f.read()
-                    return f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{config_data}"
+                    cls.setup_network()
                 except Exception as e:
-                    return f"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to read config: {e}"
-                    
-            elif 'POST /config' in request:
-                # Update configuration
-                try:
-                    # Extract JSON from POST body
-                    body_start = request.find('\r\n\r\n')
-                    if body_start == -1:
-                        return "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nNo request body"
-                    
-                    new_config = request[body_start + 4:]
-                    
-                    # Validate JSON
-                    import json
-                    parsed_config = json.loads(new_config)
-                    
-                    # Basic validation
-                    if 'known_networks' not in parsed_config or 'access_point' not in parsed_config:
-                        return "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nInvalid config structure"
-                    
-                    # Save new configuration
-                    with open(cls.config_file, 'w') as f:
-                        f.write(new_config)
-                    
-                    log.info("Configuration updated via web interface")
-                    
-                    # Restart network setup with new config
-                    try:
-                        cls.setup_network()
-                    except Exception as setup_error:
-                        log.warning(f"Network setup failed after config update: {setup_error}")
-                    
-                    return "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nConfiguration updated successfully"
-                    
-                except json.JSONDecodeError as e:
-                    return f"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nInvalid JSON: {e}"
-                except Exception as e:
-                    return f"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nUpdate failed: {e}"
-            
-            else:
-                return "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nNot found"
-                
-        except Exception as e:
-            log.error(f"Config server error: {e}")
-            return f"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nServer error: {e}"
+                    log.warning(f"Network re-setup failed: {e}")
+                return "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nConfiguration updated successfully"
+            except Exception as e:
+                return (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: text/plain\r\n"
+                    f"\r\nFailed to save config: {e}"
+                )
+
+        # 3) GET /config → serve JSON
+        if request.startswith("GET /config"):
+            try:
+                with open(cls.config_file, "r") as f:
+                    data = f.read()
+                return (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    "\r\n"
+                    f"{data}"
+                )
+            except Exception as e:
+                return (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: text/plain\r\n"
+                    f"\r\nCould not read config: {e}"
+                )
+
+        # 4) GET / or /index → serve HTML editor
+        if request.startswith("GET / ") or "GET /index" in request:
+            return (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/html\r\n"
+                "\r\n"
+                f"{cls._config_html}"
+            )
+
+        # 5) anything else → 404
+        return (
+            "HTTP/1.1 404 Not Found\r\n"
+            "Content-Type: text/plain\r\n"
+            "\r\n"
+            "Not found"
+        )
 
     @classmethod
     async def _run_config_server(cls):
