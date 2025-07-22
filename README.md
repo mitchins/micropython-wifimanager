@@ -1,6 +1,65 @@
 # micropython-wifimanager
 A simple network configuration utility for MicroPython on boards such as ESP8266 and ESP32.
 
+#### Test Start
+
+Upload wifi_manager.py and your networks.json, then in the REPL:
+
+```python
+# simple_test.py — copy to board and run in REPL
+from wifi_manager import WifiManager
+
+# this should synchronously connect to your first known network
+# and return True/False immediately
+ok = WifiManager.setup_network()
+print("✅ network OK" if ok else "❌ network failed")
+```
+
+#### Production Usage
+
+##### a) Asynchronous, managed in background
+Create main.py on your device:
+
+```python
+import uasyncio as asyncio
+import logging
+from wifi_manager import WifiManager
+
+logging.basicConfig(level=logging.INFO)
+WifiManager.on_connection_change(lambda evt, **kw: print("Event:", evt, kw))
+
+# start the periodic manager
+WifiManager.start_managing()
+
+# hand off to uasyncio
+asyncio.get_event_loop().run_forever()
+```
+
+> **Note:** scans and auto-reconnects every 10 s per your config.
+
+##### b) Auto-start on boot
+
+###### 1.	`boot.py` (runs at power-on, no REPL)
+
+```python
+# boot.py
+import machine, os
+# mount filesystem, etc.
+# then launch main.py automatically
+try:
+    import main
+except Exception as e:
+    # fail-safe: at least bring up AP
+    from wifi_manager import WifiManager
+    WifiManager.setup_network()
+```
+###### 2.	`main.py` (as above)
+
+With that in place, on every reset your board will:
+	•	Run boot.py
+	•	Hand off to your async manager in main.py,
+	•	Bring up either your known STA networks or fallback AP + WebREPL.
+
 #### Configuration
 
 Simply upload your JSON file with your networks, the default path is '/networks.json', which is specified in the class property `config_file`.
@@ -42,11 +101,11 @@ A sample configuration may look like this:
 * **schema**: currently this should be `2`
 * **known_networks**: list of networks to connect to, in order of most preferred first
 	* SSID - the name of the access point
-	* password - the clear test password to use
+	* password - the clear-text password to use
 	* enables_webrepl - a boolean value to indicate if connection to this network desires webrepl being started
 * **access_point**: the details for the access point (AP) of this device
 	* config - the keys for the AP config, exactly as per the micropython documentation
-	* enables_weprepl - a boolean value to indicate if ceating this network desires webrepl being started
+	* enables_webrepl - a boolean value to indicate if ceating this network desires webrepl being started
 	* start_policy - A policy from the below list to indicate when to enable the AP
 		* 'always' - regardless of the connection to any base station, AP will be started
 		* 'fallback' - the AP will only be started if no network could be connected to
