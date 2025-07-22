@@ -29,16 +29,21 @@ try:
 except ImportError:
     pass
 
-# Micropython libraries (install view uPip)
+# at top of wifi_manager.py
 try:
     import logging
     log = logging.getLogger("wifi_manager")
 except ImportError:
-    # Todo: stub logging, this can probably be improved easily, though logging is common to install
-    def fake_log(msg, *args):
-        print("[?] No logger detected. (log dropped)")
-    log = type("", (), {"debug": fake_log, "info": fake_log, "warning": fake_log, "error": fake_log,
-                            "critical": fake_log})()
+    class StubLog:
+        def __init__(self, name): self.name = name
+        def _log(self, level, *args):
+            print(f"[{level}] {self.name}:", *args)
+        def debug(self, *args):    self._log("DEBUG", *args)
+        def info(self, *args):     self._log(" INFO", *args)
+        def warning(self, *args):  self._log(" WARN", *args)
+        def error(self, *args):    self._log("ERROR", *args)
+        def critical(self, *args): self._log("CRIT",  *args)
+    log = StubLog("wifi_manager")
 
 class WifiManager:
     webrepl_triggered = False
