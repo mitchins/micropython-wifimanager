@@ -29,21 +29,27 @@ try:
 except ImportError:
     pass
 
-# at top of wifi_manager.py
+# Robust logger setup
 try:
     import logging
     log = logging.getLogger("wifi_manager")
 except ImportError:
-    class StubLog:
-        def __init__(self, name): self.name = name
-        def _log(self, level, *args):
-            print(f"[{level}] {self.name}:", *args)
-        def debug(self, *args):    self._log("DEBUG", *args)
-        def info(self, *args):     self._log(" INFO", *args)
-        def warning(self, *args):  self._log(" WARN", *args)
-        def error(self, *args):    self._log("ERROR", *args)
-        def critical(self, *args): self._log("CRIT",  *args)
-    log = StubLog("wifi_manager")
+    # Try ulogging (some ports bundle it as ulogging)
+    try:
+        import ulogging as logging
+        log = logging.getLogger("wifi_manager")
+    except (ImportError, AttributeError):
+        # Last resort: minimal stub
+        class StubLog:
+            def __init__(self, name): self.name = name
+            def _log(self, level, *args):
+                print(f"[{level}] {self.name}:", *args)
+            def debug(self, *args):    self._log("DEBUG", *args)
+            def info(self, *args):     self._log(" INFO", *args)
+            def warning(self, *args):  self._log(" WARN", *args)
+            def error(self, *args):    self._log("ERROR", *args)
+            def critical(self, *args): self._log("CRIT",  *args)
+        log = StubLog("wifi_manager")
 
 class WifiManager:
     webrepl_triggered = False
