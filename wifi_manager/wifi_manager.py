@@ -13,7 +13,7 @@ this would allow multiple access points with the same name, and we can select by
 
 
 """
-__version__ = "1.0.0"
+__version__ = "1.0.2"
 
 import json
 import time
