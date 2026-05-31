@@ -2,6 +2,7 @@
 import functools
 import unittest
 import sys
+import re
 
 sys.modules['network'] = __import__('fake_network')
 
@@ -22,12 +23,14 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(True)
 
     def test_version_metadata_is_synced(self):
-        self.assertEqual(wifi_manager.__version__, "1.0.3")
+        version = wifi_manager.__version__
+        self.assertEqual(version, "1.0.3")
 
         with open("wifi_manager/metadata.txt", "r") as metadata_file:
             metadata = metadata_file.read()
-        self.assertIn("version = 1.0.3", metadata)
+        self.assertIn(f"version = {version}", metadata)
 
         with open("wifi_manager/setup.py", "r") as setup_file:
             setup = setup_file.read()
+        self.assertRegex(setup, rf"(?m)^version = ['\"]{re.escape(version)}['\"]$")
         self.assertIn("version = version", setup)
