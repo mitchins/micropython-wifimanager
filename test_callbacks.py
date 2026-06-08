@@ -8,7 +8,7 @@ import json
 import time
 import tempfile
 import os
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 
 # Mock the MicroPython modules before importing wifi_manager
 sys.modules['network'] = Mock()
@@ -60,8 +60,9 @@ class MockWLAN:
     def config(self, param=None, **kwargs):
         if param == 'ssid':
             return self.current_ssid
-        # For AP configuration
-        pass
+        if kwargs:
+            self.current_ssid = kwargs.get('essid', self.current_ssid)
+        return None
     
     def status(self):
         return network.STAT_GOT_IP if self.is_connected else 0

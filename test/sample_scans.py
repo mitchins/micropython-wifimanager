@@ -1,3 +1,7 @@
+NETCOMM_SSID = b'NetComm '
+NETCOMM_BSSID = b'\x18\x1fE\x15\x05"'
+
+
 # Simple Case
 def scan1():
     return [
@@ -7,7 +11,7 @@ def scan1():
         (b'Telstra2957', b'\x10\xdaC\xf6\x86\x87', 1, -86, 3, False),
         (b'Fon WiFi', b'\x12\xdaC\xf6\x86\x8a', 1, -86, 0, False),
         (b'Telstra Air', b'\x12\xdaC\xf6\x86\x89', 1, -87, 0, False),
-        (b'NetComm ', b'\x18\x1fE\x15\x05"', 6, -91, 4, False)
+        (NETCOMM_SSID, NETCOMM_BSSID, 6, -91, 4, False)
     ]
 
 
@@ -21,11 +25,11 @@ def scan2():
         (b'HomeNetwork', b'\x90r@\x1f\xf0\xe4', 11, -51, 3, False),
         (b'SEC_LinkShare_f297a2', b'\xd0f{\n{\x15', 3, -92, 3, False),
         (b'HUAWEI-B315-D0B0', b'T\xb1! \xd0\xb0', 5, -92, 3, False),
-        (b'NetComm ', b'\x18\x1fE\x15\x05"', 6, -95, 4, False)
+        (NETCOMM_SSID, NETCOMM_BSSID, 6, -95, 4, False)
     ]
 
 # Test for not much going on
 def scan3():
     return [
-        (b'NetComm ', b'\x18\x1fE\x15\x05"', 6, -95, 4, False)
+        (NETCOMM_SSID, NETCOMM_BSSID, 6, -95, 4, False)
     ]

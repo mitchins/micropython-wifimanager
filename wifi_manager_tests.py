@@ -1,18 +1,6 @@
-# 1. Check for missing config file
+"""Scratchpad for manual WiFiManager experiments.
 
-
-### TODO: All of this.
-# Set WiFi access point name (formally known as ESSID) and WiFi channel
-ap.config(essid='My AP', channel=11)
-# Query params one by one
-print(ap.config('essid'))
-print(ap.config('channel'))
-Following are commonly supported parameters (availability of a specific parameter depends on network technology type, driver, and MicroPython port).
-
-Parameter	Description
-mac	MAC address (bytes)
-essid	WiFi access point name (string)
-channel	WiFi channel (integer)
-hidden	Whether ESSID is hidden (boolean)
-authmode	Authentication mode supported (enumeration, see module constants)
-password	Access password (string)
+This file is intentionally kept import-safe so desktop tooling does not fail on
+syntax errors. Add runnable snippets here only if they are wrapped in functions
+or guarded by ``if __name__ == "__main__":``.
+"""

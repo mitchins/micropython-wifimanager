@@ -1,8 +1,6 @@
 # micropython-wifimanager
 A simple network configuration utility for MicroPython on boards such as ESP8266 and ESP32.
 
-> Maintenance refresh: release metadata is now kept in sync as v1.0.3.
-
 #### Test Start
 
 Upload wifi_manager.py and your networks.json, then in the REPL:

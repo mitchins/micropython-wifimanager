@@ -31,10 +31,10 @@ class Logger:
             return l
         return "LVL%s" % level
 
-    def setLevel(self, level):
+    def set_level(self, level):
         self.level = level
 
-    def isEnabledFor(self, level):
+    def is_enabled_for(self, level):
         return level >= (self.level or _level)
 
     def log(self, level, msg, *args):
@@ -68,10 +68,14 @@ class Logger:
         self.exc(sys.exc_info()[1], msg, *args)
 
 
+Logger.setLevel = Logger.set_level
+Logger.isEnabledFor = Logger.is_enabled_for
+
+
 _level = INFO
 _loggers = {}
 
-def getLogger(name):
+def get_logger(name):
     if name in _loggers:
         return _loggers[name]
     l = Logger(name)
@@ -79,12 +83,12 @@ def getLogger(name):
     return l
 
 def info(msg, *args):
-    getLogger(None).info(msg, *args)
+    get_logger(None).info(msg, *args)
 
 def debug(msg, *args):
-    getLogger(None).debug(msg, *args)
+    get_logger(None).debug(msg, *args)
 
-def basicConfig(level=INFO, filename=None, stream=None, format=None):
+def basic_config(level=INFO, filename=None, stream=None, format=None):
     global _level, _stream
     _level = level
     if stream:
@@ -93,3 +97,7 @@ def basicConfig(level=INFO, filename=None, stream=None, format=None):
         print("logging.basicConfig: filename arg is not supported")
     if format is not None:
         print("logging.basicConfig: format arg is not supported")
+
+
+getLogger = get_logger
+basicConfig = basic_config
