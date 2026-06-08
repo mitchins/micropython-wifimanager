@@ -273,6 +273,37 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.assertEqual(stored["known_networks"][0]["password"], "office-pass")
         self.assertEqual(stored["known_networks"][1]["password"], "home-pass")
 
+    def test_handle_config_request_post_rejects_invalid_merged_config(self):
+        config_path = self._make_temp_config({
+            "schema": 2,
+            "known_networks": [{"ssid": "HomeNetwork", "password": "wifi-pass"}],
+            "access_point": {
+                "config": {"essid": "AP", "password": "ap-pass"},
+                "enables_webrepl": False,
+                "start_policy": "never",
+            },
+        })
+        self.manager.config_file = config_path
+        self.manager._config_server_password = "secret"
+        payload = json.dumps({
+            "schema": 2,
+            "known_networks": [{"ssid": "HomeNetwork", "password": "***"}],
+            "access_point": {"config": "not-a-dict"},
+        })
+
+        with patch.object(self.manager, "setup_network", return_value=True) as setup_network:
+            response = self.manager._handle_config_request(
+                self._auth_request("POST", "/config", "secret", payload)
+            )
+
+        with open(config_path, "r") as config_file:
+            stored = json.load(config_file)
+
+        self.assertIn("400 Bad Request", response)
+        self.assertIn("Invalid configuration", response)
+        self.assertEqual(stored["access_point"]["config"]["essid"], "AP")
+        setup_network.assert_not_called()
+
     def test_merge_masked_config_preserves_non_network_lists_by_position(self):
         merged = self.manager._merge_masked_config(
             {"tokens": [{"password": "***"}, {"password": "fresh"}]},
@@ -286,6 +317,28 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.manager._config_server_password = "secret"
         response = self.manager._handle_config_request("GET /config HTTP/1.1\r\n\r\n")
         self.assertIn("401 Unauthorized", response)
+
+    def test_handle_config_request_routes_exact_paths_only(self):
+        self.manager._config_server_password = ""
+        self.manager.config_file = self._make_temp_config({
+            "schema": 2,
+            "known_networks": [],
+            "access_point": {
+                "config": {"essid": "AP", "password": "ap-pass"},
+                "enables_webrepl": False,
+                "start_policy": "never",
+            },
+        })
+
+        config_response = self.manager._handle_config_request("GET /config HTTP/1.1\r\n\r\n")
+        index_response = self.manager._handle_config_request("GET /index HTTP/1.1\r\n\r\n")
+        near_miss_response = self.manager._handle_config_request("GET /index.html HTTP/1.1\r\n\r\n")
+        config_near_miss_response = self.manager._handle_config_request("GET /config-extra HTTP/1.1\r\n\r\n")
+
+        self.assertIn("200 OK", config_response)
+        self.assertIn("200 OK", index_response)
+        self.assertIn("404 Not Found", near_miss_response)
+        self.assertIn("404 Not Found", config_near_miss_response)
 
     def test_read_http_request_and_send_http_response(self):
         request = (

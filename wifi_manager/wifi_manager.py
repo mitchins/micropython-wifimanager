@@ -576,10 +576,17 @@ loadConfig();
         except (OSError, TypeError, ValueError):
             return {}
 
-    @staticmethod
-    def _validate_config_payload(config):
-        if "known_networks" not in config or "access_point" not in config:
-            raise ValueError("Missing required keys")
+    @classmethod
+    def _normalise_persisted_config(cls, config):
+        preferred_networks, ap_config, server_config, schema = cls._normalise_loaded_config(config)
+        normalized = dict(config)
+        normalized["known_networks"] = preferred_networks
+        normalized["access_point"] = ap_config
+        if "config_server" in normalized or server_config:
+            normalized["config_server"] = server_config
+        if "schema" in normalized:
+            normalized["schema"] = schema
+        return normalized
 
     @classmethod
     def _handle_config_post_request(cls, request):
@@ -589,16 +596,23 @@ loadConfig();
 
         try:
             config = json.loads(body)
-            cls._validate_config_payload(config)
         except (TypeError, ValueError) as error:
             return cls._build_http_response("400 Bad Request", "Invalid JSON: {}".format(error))
 
         try:
             existing_config = cls._load_existing_config()
             config_to_save = cls._merge_masked_config(config, existing_config)
+            config_to_save = cls._normalise_persisted_config(config_to_save)
+        except (TypeError, ValueError) as error:
+            return cls._build_http_response(
+                "400 Bad Request",
+                "Invalid configuration: {}".format(error),
+            )
+
+        try:
             with open(cls.config_file, "w") as config_file:
                 config_file.write(json.dumps(config_to_save))
-        except (OSError, TypeError, ValueError) as error:
+        except OSError as error:
             return cls._build_http_response(
                 "500 Internal Server Error",
                 "Failed to save config: {}".format(error),
@@ -713,23 +727,26 @@ loadConfig();
                 extra_headers=['WWW-Authenticate: Basic realm="WiFi Config"'],
             )
 
-        # 2) POST /config → update config
-        if request.startswith("POST /config"):
+        request_line = request.split("\r\n", 1)[0]
+        request_parts = request_line.split(" ", 2)
+        if len(request_parts) < 2:
+            return cls._build_http_response("404 Not Found", "Not found")
+
+        method, path = request_parts[0], request_parts[1]
+
+        if method == "POST" and path == "/config":
             return cls._handle_config_post_request(request)
 
-        # 3) GET /config → serve JSON
-        if request.startswith("GET /config"):
+        if method == "GET" and path == "/config":
             return cls._handle_config_get_request()
 
-        # 4) GET / or /index → serve HTML editor
-        if request.startswith("GET / ") or "GET /index" in request:
+        if method == "GET" and path in ("/", "/index"):
             return cls._build_http_response(
                 cls._http_status_ok,
                 cls._config_html,
                 content_type="text/html",
             )
 
-        # 5) anything else → 404
         return cls._build_http_response("404 Not Found", "Not found")
 
     @classmethod
