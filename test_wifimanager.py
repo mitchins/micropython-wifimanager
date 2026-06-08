@@ -153,6 +153,21 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.assertEqual(self.manager.ap_config["start_policy"], "always")
         start_server.assert_called_once_with(self.manager._config_server_password)
 
+    def test_load_config_invalid_shape_falls_back_to_recovery_ap(self):
+        config_path = self._make_temp_config({
+            "schema": 2,
+            "known_networks": "not-a-list",
+            "access_point": {"config": {"essid": "BadAP"}},
+        })
+        self.manager.config_file = config_path
+
+        with patch.object(self.manager, "start_config_server", return_value=True) as start_server:
+            self.assertFalse(self.manager._load_config())
+
+        self.assertEqual(self.manager.preferred_networks, [])
+        self.assertEqual(self.manager.ap_config["config"]["essid"], "MicroPython-AP")
+        start_server.assert_called_once_with(self.manager._config_server_password)
+
     def test_check_basic_auth_accepts_valid_credentials(self):
         self.manager._config_server_password = "secret"
         request = self._auth_request("GET", "/config", "secret")
@@ -216,6 +231,46 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.assertEqual(stored["access_point"]["config"]["essid"], "UpdatedAP")
         setup_network.assert_called_once_with()
 
+    def test_handle_config_request_post_preserves_masked_passwords_by_ssid(self):
+        config_path = self._make_temp_config({
+            "schema": 2,
+            "known_networks": [
+                {"ssid": "HomeNetwork", "password": "home-pass"},
+                {"ssid": "OfficeNetwork", "password": "office-pass"},
+            ],
+            "access_point": {
+                "config": {"essid": "AP", "password": "ap-pass"},
+                "enables_webrepl": False,
+                "start_policy": "never",
+            },
+        })
+        self.manager.config_file = config_path
+        self.manager._config_server_password = "secret"
+        payload = json.dumps({
+            "schema": 2,
+            "known_networks": [
+                {"ssid": "OfficeNetwork", "password": "***"},
+                {"ssid": "HomeNetwork", "password": "***"},
+            ],
+            "access_point": {
+                "config": {"essid": "AP", "password": "***"},
+                "enables_webrepl": False,
+                "start_policy": "never",
+            },
+        })
+
+        with patch.object(self.manager, "setup_network", return_value=True):
+            response = self.manager._handle_config_request(
+                self._auth_request("POST", "/config", "secret", payload)
+            )
+
+        with open(config_path, "r") as config_file:
+            stored = json.load(config_file)
+
+        self.assertIn("200 OK", response)
+        self.assertEqual(stored["known_networks"][0]["password"], "office-pass")
+        self.assertEqual(stored["known_networks"][1]["password"], "home-pass")
+
     def test_handle_config_request_requires_auth(self):
         self.manager._config_server_password = "secret"
         response = self.manager._handle_config_request("GET /config HTTP/1.1\r\n\r\n")
@@ -234,6 +289,14 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.assertTrue(received.endswith("hello"))
         self.assertEqual(sender.payload.decode(), "HTTP/1.1 200 OK\r\n\r\nhello")
 
+    def test_read_http_request_rejects_oversized_requests(self):
+        oversized = (
+            b"POST /config HTTP/1.1\r\nContent-Length: 20000\r\n\r\n",
+            b"x" * 128,
+        )
+        with self.assertRaises(ValueError):
+            self.manager._read_http_request(FakeReceiveConnection(oversized))
+
     def test_scan_available_networks_sorts_and_skips_invalid_entries(self):
         interface = fake_network.WLAN(fake_network.STA_IF)
         interface.scan_results = [
@@ -245,3 +308,16 @@ class WifiManagerHelperTests(unittest.TestCase):
         networks = self.manager._scan_available_networks()
 
         self.assertEqual([network["ssid"] for network in networks], ["Office", "HomeNetwork"])
+
+    def test_build_connection_candidates_skips_non_dict_preferences(self):
+        self.manager.preferred_networks = [
+            "HomeNetwork",
+            {"ssid": "Office", "password": "secret", "enables_webrepl": True},
+        ]
+
+        candidates = self.manager._build_connection_candidates([
+            {"ssid": "Office", "bssid": b"\x01\x02\x03\x04\x05\x06", "strength": -20},
+        ])
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["ssid"], "Office")

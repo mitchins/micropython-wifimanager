@@ -64,6 +64,7 @@ class WifiManager:
     _connection_callbacks = []
     _last_connection_state = None
     _masked_password = "***"
+    _max_request_bytes = 16384
     
     # Minimal HTML for config interface
     _config_html = """<!DOCTYPE html>
@@ -213,8 +214,12 @@ loadConfig();
 
     @classmethod
     def _normalise_access_point_config(cls, ap_config):
+        if not isinstance(ap_config, dict):
+            raise ValueError("access_point must be a JSON object")
         ap_config = dict(ap_config or {})
         if "config" in ap_config:
+            if not isinstance(ap_config.get("config") or {}, dict):
+                raise ValueError("access_point.config must be a JSON object")
             ap_config["config"] = dict(ap_config.get("config") or {})
             return ap_config
 
@@ -224,6 +229,16 @@ loadConfig();
                 raw_config[key] = ap_config.pop(key)
         ap_config["config"] = raw_config
         return ap_config
+
+    @classmethod
+    def _setup_recovery_ap(cls):
+        cls.preferred_networks = []
+        cls.ap_config = {
+            "config": {"essid": "MicroPython-AP", "password": "micropython"},
+            "enables_webrepl": True,
+            "start_policy": "always"
+        }
+        cls.start_config_server(cls._config_server_password)
 
     @classmethod
     def _mask_passwords(cls, value):
@@ -240,11 +255,34 @@ loadConfig();
         return value
 
     @classmethod
+    def _merge_masked_networks(cls, candidate_networks, existing_networks):
+        existing_networks = existing_networks if isinstance(existing_networks, list) else []
+        existing_by_ssid = {}
+        for network in existing_networks:
+            if not isinstance(network, dict):
+                continue
+            ssid = network.get("ssid")
+            if ssid is None or ssid in existing_by_ssid:
+                continue
+            existing_by_ssid[ssid] = network
+
+        merged = []
+        for network in candidate_networks:
+            existing_network = None
+            if isinstance(network, dict):
+                existing_network = existing_by_ssid.get(network.get("ssid"))
+            merged.append(cls._merge_masked_config(network, existing_network))
+        return merged
+
+    @classmethod
     def _merge_masked_config(cls, candidate, existing):
         if isinstance(candidate, dict):
             existing = existing if isinstance(existing, dict) else {}
             merged = {}
             for key, value in candidate.items():
+                if key == "known_networks" and isinstance(value, list):
+                    merged[key] = cls._merge_masked_networks(value, existing.get(key))
+                    continue
                 if key == "password" and value == cls._masked_password:
                     merged[key] = existing.get(key, "")
                 else:
@@ -270,6 +308,8 @@ loadConfig();
             if not chunk:
                 break
             data += chunk
+            if len(data) > cls._max_request_bytes:
+                raise ValueError("Request too large")
 
             if header_end < 0:
                 header_end = data.find(b"\r\n\r\n")
@@ -282,6 +322,8 @@ loadConfig();
                             except ValueError:
                                 content_length = 0
                             break
+                    if content_length > cls._max_request_bytes:
+                        raise ValueError("Request too large")
 
             if header_end >= 0:
                 body_length = len(data) - (header_end + 4)
@@ -308,43 +350,50 @@ loadConfig();
         return "\r\n".join(headers)
 
     @classmethod
+    def _normalise_loaded_config(cls, config):
+        if not isinstance(config, dict):
+            raise ValueError("Configuration must be a JSON object")
+        if "known_networks" not in config or "access_point" not in config:
+            raise ValueError("Missing required configuration keys")
+
+        preferred_networks = config.get("known_networks")
+        if not isinstance(preferred_networks, list):
+            raise ValueError("known_networks must be a list")
+
+        server_config = config.get("config_server") or {}
+        if not isinstance(server_config, dict):
+            raise ValueError("config_server must be a JSON object")
+
+        return (
+            preferred_networks,
+            cls._normalise_access_point_config(config.get("access_point")),
+            server_config,
+            config.get("schema", 0),
+        )
+
+    @classmethod
     def _load_config(cls):
         try:
             with open(cls.config_file, "r") as config_file:
                 config = json.load(config_file)
+            preferred_networks, ap_config, server_config, schema = cls._normalise_loaded_config(
+                config
+            )
         except (OSError, TypeError, ValueError) as error:
             log.error("Failed to load config file: {}. Falling back to recovery AP.".format(error))
-            cls.preferred_networks = []
-            cls.ap_config = {
-                "config": {"essid": "MicroPython-AP", "password": "micropython"},
-                "enables_webrepl": True,
-                "start_policy": "always"
-            }
-            cls.start_config_server(cls._config_server_password)
+            cls._setup_recovery_ap()
             return False
 
-        if "known_networks" not in config or "access_point" not in config:
-            log.error("Failed to load config file: Missing required configuration keys. Falling back to recovery AP.")
-            cls.preferred_networks = []
-            cls.ap_config = {
-                "config": {"essid": "MicroPython-AP", "password": "micropython"},
-                "enables_webrepl": True,
-                "start_policy": "always"
-            }
-            cls.start_config_server(cls._config_server_password)
-            return False
+        cls.preferred_networks = preferred_networks
+        cls.ap_config = ap_config
 
-        cls.preferred_networks = config.get("known_networks", [])
-        cls.ap_config = cls._normalise_access_point_config(config.get("access_point"))
-
-        server_config = config.get("config_server") or {}
         if server_config.get("enabled", False):
             password = server_config.get("password", cls._config_server_password)
             cls.start_config_server(password)
         else:
             cls.stop_config_server()
 
-        if config.get("schema", 0) != 2:
+        if schema != 2:
             log.warning("Did not get expected schema [2] in JSON config.")
         return True
 
@@ -356,13 +405,19 @@ loadConfig();
             log.error("Network scan failed: {}".format(error))
             return None
 
+        try:
+            scan_results = list(scan_results)
+        except TypeError as error:
+            log.error("Network scan returned invalid data: {}".format(error))
+            return []
+
         available_networks = []
         for scan_result in scan_results:
             try:
                 ssid = scan_result[0].decode("utf-8")
                 bssid = scan_result[1]
                 strength = scan_result[3]
-            except (IndexError, UnicodeDecodeError) as error:
+            except (AttributeError, IndexError, TypeError, UnicodeDecodeError) as error:
                 log.warning("Failed to parse network scan result: {}".format(error))
                 continue
             available_networks.append({
@@ -378,6 +433,8 @@ loadConfig();
     def _build_connection_candidates(cls, available_networks):
         candidates = []
         for preference in cls.preferred_networks:
+            if not isinstance(preference, dict):
+                continue
             preferred_ssid = preference.get("ssid")
             if preferred_ssid is None:
                 continue
@@ -423,7 +480,9 @@ loadConfig();
             failed_ssids = [candidate["ssid"] for candidate in candidates]
             if not failed_ssids:
                 failed_ssids = [
-                    item.get("ssid") for item in cls.preferred_networks if item.get("ssid")
+                    item.get("ssid")
+                    for item in cls.preferred_networks
+                    if isinstance(item, dict) and item.get("ssid")
                 ]
             cls._notify_connection_change("connection_failed", attempted_networks=failed_ssids)
         except (AttributeError, TypeError, ValueError) as error:
@@ -667,7 +726,7 @@ loadConfig();
 
                     # Send response
                     cls._send_http_response(conn, response)
-                except (OSError, UnicodeError, ValueError) as e:
+                except Exception as e:
                     log.warning(f"Config server request error: {e}")
                 finally:
                     try:
@@ -776,8 +835,8 @@ loadConfig();
                         config = cls.wlan().config('ssid')
                         if config:
                             ssid = config
-                    except Exception:
-                        pass
+                    except (AttributeError, KeyError, OSError, TypeError, ValueError) as error:
+                        log.debug(f"Failed to read connected SSID: {error}")
                     
                     cls._notify_connection_change("connected", ssid=ssid, ip=ip)
                 else:
