@@ -21,6 +21,12 @@ sys.modules['logging'] = fake_logging
 import wifi_manager
 
 TEST_ROOT = Path(__file__).resolve().parent
+FIXTURE_NETWORK_PASSWORD = "bravo"
+FIXTURE_AP_PASSWORD = "delta"
+FIXTURE_FLAT_AP_PASSWORD = "charlie"
+FIXTURE_CONFIG_SERVER_PASSWORD = "alpha"
+FIXTURE_HOME_PASSWORD = "echo"
+FIXTURE_OFFICE_PASSWORD = "foxtrot"
 
 # The tests
 
@@ -123,15 +129,15 @@ class WifiManagerHelperTests(unittest.TestCase):
     def test_load_config_normalizes_access_point_and_starts_server(self):
         config_path = self._make_temp_config({
             "schema": 2,
-            "known_networks": [{"ssid": "HomeNetwork", "password": "sekret"}],
+            "known_networks": [{"ssid": "HomeNetwork", "password": FIXTURE_NETWORK_PASSWORD}],
             "access_point": {
                 "essid": "FlatAP",
                 "channel": 6,
-                "password": "flatpass",
+                "password": FIXTURE_FLAT_AP_PASSWORD,
                 "enables_webrepl": True,
                 "start_policy": "fallback",
             },
-            "config_server": {"enabled": True, "password": "adminpass"},
+            "config_server": {"enabled": True, "password": FIXTURE_CONFIG_SERVER_PASSWORD},
         })
         self.manager.config_file = config_path
 
@@ -140,9 +146,9 @@ class WifiManagerHelperTests(unittest.TestCase):
 
         self.assertEqual(self.manager.preferred_networks[0]["ssid"], "HomeNetwork")
         self.assertEqual(self.manager.ap_config["config"]["essid"], "FlatAP")
-        self.assertEqual(self.manager.ap_config["config"]["password"], "flatpass")
+        self.assertEqual(self.manager.ap_config["config"]["password"], FIXTURE_FLAT_AP_PASSWORD)
         self.assertEqual(self.manager.ap_config["start_policy"], "fallback")
-        start_server.assert_called_once_with("adminpass")
+        start_server.assert_called_once_with(FIXTURE_CONFIG_SERVER_PASSWORD)
 
     def test_load_config_missing_file_falls_back_to_recovery_ap(self):
         self.manager.config_file = "/tmp/definitely-missing-wifimanager-config.json"
@@ -188,6 +194,11 @@ class WifiManagerHelperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.manager._normalise_loaded_config({
                 "known_networks": [],
+                "access_point": "not-a-dict",
+            })
+        with self.assertRaises(ValueError):
+            self.manager._normalise_loaded_config({
+                "known_networks": [],
                 "access_point": {"config": {"essid": "AP"}},
                 "config_server": "bad",
             })
@@ -201,9 +212,9 @@ class WifiManagerHelperTests(unittest.TestCase):
     def test_handle_config_request_get_masks_passwords(self):
         config_path = self._make_temp_config({
             "schema": 2,
-            "known_networks": [{"ssid": "HomeNetwork", "password": "wifi-pass"}],
+            "known_networks": [{"ssid": "HomeNetwork", "password": FIXTURE_NETWORK_PASSWORD}],
             "access_point": {
-                "config": {"essid": "AP", "password": "ap-pass"},
+                "config": {"essid": "AP", "password": FIXTURE_AP_PASSWORD},
                 "enables_webrepl": False,
                 "start_policy": "never",
             },
@@ -222,9 +233,9 @@ class WifiManagerHelperTests(unittest.TestCase):
     def test_handle_config_request_post_preserves_masked_passwords(self):
         config_path = self._make_temp_config({
             "schema": 2,
-            "known_networks": [{"ssid": "HomeNetwork", "password": "wifi-pass"}],
+            "known_networks": [{"ssid": "HomeNetwork", "password": FIXTURE_NETWORK_PASSWORD}],
             "access_point": {
-                "config": {"essid": "AP", "password": "ap-pass"},
+                "config": {"essid": "AP", "password": FIXTURE_AP_PASSWORD},
                 "enables_webrepl": False,
                 "start_policy": "never",
             },
@@ -250,8 +261,8 @@ class WifiManagerHelperTests(unittest.TestCase):
             stored = json.load(config_file)
 
         self.assertIn("200 OK", response)
-        self.assertEqual(stored["known_networks"][0]["password"], "wifi-pass")
-        self.assertEqual(stored["access_point"]["config"]["password"], "ap-pass")
+        self.assertEqual(stored["known_networks"][0]["password"], FIXTURE_NETWORK_PASSWORD)
+        self.assertEqual(stored["access_point"]["config"]["password"], FIXTURE_AP_PASSWORD)
         self.assertEqual(stored["access_point"]["config"]["essid"], "UpdatedAP")
         setup_network.assert_called_once_with()
 
@@ -259,11 +270,11 @@ class WifiManagerHelperTests(unittest.TestCase):
         config_path = self._make_temp_config({
             "schema": 2,
             "known_networks": [
-                {"ssid": "HomeNetwork", "password": "home-pass"},
-                {"ssid": "OfficeNetwork", "password": "office-pass"},
+                {"ssid": "HomeNetwork", "password": FIXTURE_HOME_PASSWORD},
+                {"ssid": "OfficeNetwork", "password": FIXTURE_OFFICE_PASSWORD},
             ],
             "access_point": {
-                "config": {"essid": "AP", "password": "ap-pass"},
+                "config": {"essid": "AP", "password": FIXTURE_AP_PASSWORD},
                 "enables_webrepl": False,
                 "start_policy": "never",
             },
@@ -292,15 +303,15 @@ class WifiManagerHelperTests(unittest.TestCase):
             stored = json.load(config_file)
 
         self.assertIn("200 OK", response)
-        self.assertEqual(stored["known_networks"][0]["password"], "office-pass")
-        self.assertEqual(stored["known_networks"][1]["password"], "home-pass")
+        self.assertEqual(stored["known_networks"][0]["password"], FIXTURE_OFFICE_PASSWORD)
+        self.assertEqual(stored["known_networks"][1]["password"], FIXTURE_HOME_PASSWORD)
 
     def test_handle_config_request_post_rejects_invalid_merged_config(self):
         config_path = self._make_temp_config({
             "schema": 2,
-            "known_networks": [{"ssid": "HomeNetwork", "password": "wifi-pass"}],
+            "known_networks": [{"ssid": "HomeNetwork", "password": FIXTURE_NETWORK_PASSWORD}],
             "access_point": {
-                "config": {"essid": "AP", "password": "ap-pass"},
+                "config": {"essid": "AP", "password": FIXTURE_AP_PASSWORD},
                 "enables_webrepl": False,
                 "start_policy": "never",
             },
@@ -350,7 +361,7 @@ class WifiManagerHelperTests(unittest.TestCase):
             "schema": 2,
             "known_networks": [],
             "access_point": {
-                "config": {"essid": "AP", "password": "ap-pass"},
+                "config": {"essid": "AP", "password": FIXTURE_AP_PASSWORD},
                 "enables_webrepl": False,
                 "start_policy": "never",
             },
@@ -373,7 +384,7 @@ class WifiManagerHelperTests(unittest.TestCase):
             "known_networks": [],
             "access_point": {
                 "essid": "FlatAP",
-                "password": "flatpass",
+                "password": FIXTURE_FLAT_AP_PASSWORD,
             },
             "config_server": {
                 "enabled": True,
@@ -412,7 +423,7 @@ class WifiManagerHelperTests(unittest.TestCase):
             "schema": 2,
             "known_networks": [],
             "access_point": {
-                "config": {"essid": "AP", "password": "ap-pass"},
+                "config": {"essid": "AP", "password": FIXTURE_AP_PASSWORD},
                 "enables_webrepl": False,
                 "start_policy": "never",
             },
@@ -440,8 +451,10 @@ class WifiManagerHelperTests(unittest.TestCase):
         missing_separator = "GET /config HTTP/1.1\r\nAuthorization: Basic %s\r\n\r\n" % (
             base64.b64encode(b"adminonly").decode()
         )
+        invalid_base64 = "GET /config HTTP/1.1\r\nAuthorization: Basic invalid_base64!!!\r\n\r\n"
 
         self.assertFalse(self.manager._check_basic_auth(missing_separator))
+        self.assertFalse(self.manager._check_basic_auth(invalid_base64))
 
     def test_check_basic_auth_rejects_decode_errors(self):
         self.manager._config_server_password = "secret"
