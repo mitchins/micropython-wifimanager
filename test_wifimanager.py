@@ -30,11 +30,13 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(hasattr(wifi_manager, "__version__"))
 
     def test_version_metadata_is_synced(self):
-        version = wifi_manager.__version__
-        self.assertEqual(version, "1.0.3")
-
         with open(TEST_ROOT / "wifi_manager" / "metadata.txt", "r") as metadata_file:
             metadata = metadata_file.read()
+        match = re.search(r"(?m)^version = (.+)$", metadata)
+        self.assertIsNotNone(match)
+        version = match.group(1).strip()
+
+        self.assertEqual(wifi_manager.__version__, version)
         self.assertIn(f"version = {version}", metadata)
 
         with open(TEST_ROOT / "wifi_manager" / "setup.py", "r") as setup_file:

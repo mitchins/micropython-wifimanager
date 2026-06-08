@@ -258,20 +258,20 @@ loadConfig();
     def _merge_masked_networks(cls, candidate_networks, existing_networks):
         existing_networks = existing_networks if isinstance(existing_networks, list) else []
         existing_by_ssid = {}
-        for network in existing_networks:
-            if not isinstance(network, dict):
+        for existing_net in existing_networks:
+            if not isinstance(existing_net, dict):
                 continue
-            ssid = network.get("ssid")
+            ssid = existing_net.get("ssid")
             if ssid is None or ssid in existing_by_ssid:
                 continue
-            existing_by_ssid[ssid] = network
+            existing_by_ssid[ssid] = existing_net
 
         merged = []
-        for network in candidate_networks:
+        for candidate_net in candidate_networks:
             existing_network = None
-            if isinstance(network, dict):
-                existing_network = existing_by_ssid.get(network.get("ssid"))
-            merged.append(cls._merge_masked_config(network, existing_network))
+            if isinstance(candidate_net, dict):
+                existing_network = existing_by_ssid.get(candidate_net.get("ssid"))
+            merged.append(cls._merge_masked_config(candidate_net, existing_network))
         return merged
 
     @classmethod
