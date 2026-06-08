@@ -17,18 +17,20 @@ __version__ = "1.0.3"
 
 import json
 import time
-import os
 
 # Micropython modules
 import network
 try:
     import webrepl
 except ImportError:
-    pass
+    webrepl = None
 try:
     import uasyncio as asyncio
 except ImportError:
-    pass
+    try:
+        import asyncio
+    except ImportError:
+        asyncio = None
 
 # Robust logger setup
 try:
@@ -44,7 +46,7 @@ except ImportError:
         class StubLog:
             def __init__(self, name): self.name = name
             def _log(self, level, *args):
-                print(f"[{level}] {self.name}:", *args)
+                print("[%s] %s:" % (level, self.name), *args)
             def debug(self, *args):    self._log("DEBUG", *args)
             def info(self, *args):     self._log(" INFO", *args)
             def warning(self, *args):  self._log(" WARN", *args)
@@ -58,8 +60,12 @@ class WifiManager:
     config_file = '/networks.json'
     _config_server_enabled = False
     _config_server_password = "micropython"
+    _config_server_task = None
     _connection_callbacks = []
     _last_connection_state = None
+    _masked_password = "***"
+    _max_request_bytes = 16384
+    _http_status_ok = "200 OK"
     
     # Minimal HTML for config interface
     _config_html = """<!DOCTYPE html>
@@ -139,9 +145,14 @@ loadConfig();
     # Starts the managing call as a co-op async activity
     @classmethod
     def start_managing(cls):
-        loop = asyncio.get_event_loop()
+        if asyncio is None:
+            log.error("Managing requires asyncio")
+            return False
+
+        loop = cls._get_event_loop()
         loop.create_task(cls.manage()) # Schedule ASAP
         # Make sure you loop.run_forever() (we are a guest here)
+        return True
 
     # Checks the status and configures if needed
     @classmethod
@@ -177,123 +188,475 @@ loadConfig();
         return cls.wlan().status() != network.STAT_GOT_IP  # Discard intermediate states and check for not connected/ok
 
     @classmethod
-    def setup_network(cls) -> bool:
-        # now see our prioritised list of networks and find the first available network
+    def _get_event_loop(cls):
         try:
-            with open(cls.config_file, "r") as f:
-                config = json.loads(f.read())
-                cls.preferred_networks = config['known_networks']
-                cls.ap_config = config["access_point"]
-                
-                # Check for config server settings
-                if "config_server" in config:
-                    server_config = config["config_server"]
-                    if server_config.get("enabled", False):
-                        password = server_config.get("password", "micropython")
-                        cls.start_config_server(password)
-                
-                if config.get("schema", 0) != 2:
-                    log.warning("Did not get expected schema [2] in JSON config.")
-        except Exception as e:
-            log.error("Failed to load config file: {}. No known networks selected".format(e))
-            cls.preferred_networks = []
-            cls.ap_config = {"config": {"essid": "MicroPython-AP", "password": "micropython"}, 
-                           "enables_webrepl": False, "start_policy": "never"}
+            return asyncio.get_event_loop()
+        except (AttributeError, RuntimeError):
+            if hasattr(asyncio, "new_event_loop") and hasattr(asyncio, "set_event_loop"):
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                return loop
+            raise
+
+    @staticmethod
+    def _sleep_ms(duration_ms):
+        sleep_ms = getattr(time, "sleep_ms", None)
+        if sleep_ms is not None:
+            sleep_ms(duration_ms)
+            return
+        time.sleep(duration_ms / 1000.0)
+
+    @staticmethod
+    async def _sleep_async_ms(duration_ms):
+        if hasattr(asyncio, "sleep_ms"):
+            await asyncio.sleep_ms(duration_ms)
+            return
+        await asyncio.sleep(duration_ms / 1000.0)
+
+    @classmethod
+    def _normalise_access_point_config(cls, ap_config):
+        if not isinstance(ap_config, dict):
+            raise ValueError("access_point must be a JSON object")
+        ap_config = dict(ap_config or {})
+        if "config" in ap_config:
+            if not isinstance(ap_config.get("config") or {}, dict):
+                raise ValueError("access_point.config must be a JSON object")
+            ap_config["config"] = dict(ap_config.get("config") or {})
+            return ap_config
+
+        raw_config = {}
+        for key in ("essid", "channel", "hidden", "authmode", "password", "max_clients"):
+            if key in ap_config:
+                raw_config[key] = ap_config.pop(key)
+        ap_config["config"] = raw_config
+        return ap_config
+
+    @classmethod
+    def _setup_recovery_ap(cls):
+        cls.preferred_networks = []
+        cls.ap_config = {
+            "config": {"essid": "MicroPython-AP", "password": "micropython"},
+            "enables_webrepl": True,
+            "start_policy": "always"
+        }
+        cls.start_config_server(cls._config_server_password)
+
+    @classmethod
+    def _mask_passwords(cls, value):
+        if isinstance(value, dict):
+            masked = {}
+            for key, item in value.items():
+                if key == "password" and item:
+                    masked[key] = cls._masked_password
+                else:
+                    masked[key] = cls._mask_passwords(item)
+            return masked
+        if isinstance(value, list):
+            return [cls._mask_passwords(item) for item in value]
+        return value
+
+    @classmethod
+    def _merge_masked_networks(cls, candidate_networks, existing_networks):
+        existing_networks = existing_networks if isinstance(existing_networks, list) else []
+        existing_by_ssid = {}
+        for existing_net in existing_networks:
+            if not isinstance(existing_net, dict):
+                continue
+            ssid = existing_net.get("ssid")
+            if ssid is None or ssid in existing_by_ssid:
+                continue
+            existing_by_ssid[ssid] = existing_net
+
+        merged = []
+        for candidate_net in candidate_networks:
+            existing_network = None
+            if isinstance(candidate_net, dict):
+                existing_network = existing_by_ssid.get(candidate_net.get("ssid"))
+            merged.append(cls._merge_masked_config(candidate_net, existing_network))
+        return merged
+
+    @classmethod
+    def _merge_masked_dict_value(cls, key, value, existing):
+        if key == "known_networks" and isinstance(value, list):
+            return cls._merge_masked_networks(value, existing.get(key))
+        if key == "password" and value == cls._masked_password:
+            return existing.get(key, "")
+        return cls._merge_masked_config(value, existing.get(key))
+
+    @classmethod
+    def _merge_masked_dict(cls, candidate, existing):
+        existing = existing if isinstance(existing, dict) else {}
+        merged = {}
+        for key, value in candidate.items():
+            merged[key] = cls._merge_masked_dict_value(key, value, existing)
+        return merged
+
+    @classmethod
+    def _merge_masked_list(cls, candidate, existing):
+        existing = existing if isinstance(existing, list) else []
+        merged = []
+        for index, value in enumerate(candidate):
+            existing_value = existing[index] if index < len(existing) else None
+            merged.append(cls._merge_masked_config(value, existing_value))
+        return merged
+
+    @classmethod
+    def _merge_masked_config(cls, candidate, existing):
+        if isinstance(candidate, dict):
+            return cls._merge_masked_dict(candidate, existing)
+        if isinstance(candidate, list):
+            return cls._merge_masked_list(candidate, existing)
+        return candidate
+
+    @classmethod
+    def _validate_request_size(cls, size):
+        if size > cls._max_request_bytes:
+            raise ValueError("Request too large")
+
+    @staticmethod
+    def _parse_content_length(headers):
+        for line in headers.split("\r\n"):
+            if not line.lower().startswith("content-length:"):
+                continue
+            try:
+                return int(line.split(":", 1)[1].strip())
+            except ValueError:
+                return 0
+        return 0
+
+    @classmethod
+    def _extract_request_metadata(cls, data, header_end, content_length):
+        if header_end >= 0:
+            return header_end, content_length
+
+        header_end = data.find(b"\r\n\r\n")
+        if header_end < 0:
+            return header_end, content_length
+
+        headers = data[:header_end].decode()
+        content_length = cls._parse_content_length(headers)
+        cls._validate_request_size(content_length)
+        return header_end, content_length
+
+    @staticmethod
+    def _has_complete_request(data, header_end, content_length):
+        if header_end < 0:
+            return False
+        body_length = len(data) - (header_end + 4)
+        return body_length >= content_length
+
+    @classmethod
+    def _read_http_request(cls, conn):
+        content_length = 0
+        data = b""
+        header_end = -1
+
+        while True:
+            chunk = conn.recv(512)
+            if not chunk:
+                break
+            data += chunk
+            cls._validate_request_size(len(data))
+            header_end, content_length = cls._extract_request_metadata(
+                data, header_end, content_length
+            )
+            if cls._has_complete_request(data, header_end, content_length):
+                break
+
+        return data.decode()
+
+    @staticmethod
+    def _send_http_response(conn, response):
+        data = response.encode()
+        while data:
+            sent = conn.send(data)
+            data = data[sent:]
+
+    @staticmethod
+    def _build_http_response(status, body, content_type="text/plain", extra_headers=None):
+        headers = ["HTTP/1.1 %s" % status]
+        for header in extra_headers or []:
+            headers.append(header)
+        headers.append("Content-Type: %s" % content_type)
+        headers.append("")
+        headers.append(body)
+        return "\r\n".join(headers)
+
+    @classmethod
+    def _normalise_loaded_config(cls, config):
+        if not isinstance(config, dict):
+            raise ValueError("Configuration must be a JSON object")
+        if "known_networks" not in config or "access_point" not in config:
+            raise ValueError("Missing required configuration keys")
+
+        preferred_networks = config.get("known_networks")
+        if not isinstance(preferred_networks, list):
+            raise ValueError("known_networks must be a list")
+
+        server_config = config.get("config_server") or {}
+        if not isinstance(server_config, dict):
+            raise ValueError("config_server must be a JSON object")
+
+        return (
+            preferred_networks,
+            cls._normalise_access_point_config(config.get("access_point")),
+            server_config,
+            config.get("schema", 0),
+        )
+
+    @classmethod
+    def _load_config(cls):
+        try:
+            with open(cls.config_file, "r") as config_file:
+                config = json.load(config_file)
+            preferred_networks, ap_config, server_config, schema = cls._normalise_loaded_config(
+                config
+            )
+        except (OSError, TypeError, ValueError) as error:
+            log.error("Failed to load config file: {}. Falling back to recovery AP.".format(error))
+            cls._setup_recovery_ap()
             return False
 
+        cls.preferred_networks = preferred_networks
+        cls.ap_config = ap_config
+
+        if server_config.get("enabled", False):
+            password = server_config.get("password", cls._config_server_password)
+            cls.start_config_server(password)
+        else:
+            cls.stop_config_server()
+
+        if schema != 2:
+            log.warning("Did not get expected schema [2] in JSON config.")
+        return True
+
+    @classmethod
+    def _scan_available_networks(cls):
+        try:
+            scan_results = cls.wlan().scan()
+        except OSError as error:
+            log.error("Network scan failed: {}".format(error))
+            return None
+
+        try:
+            scan_results = list(scan_results)
+        except TypeError as error:
+            log.error("Network scan returned invalid data: {}".format(error))
+            return []
+
+        available_networks = []
+        for scan_result in scan_results:
+            try:
+                ssid = scan_result[0].decode("utf-8")
+                bssid = scan_result[1]
+                strength = scan_result[3]
+            except (AttributeError, IndexError, TypeError, UnicodeDecodeError) as error:
+                log.warning("Failed to parse network scan result: {}".format(error))
+                continue
+            available_networks.append({
+                "ssid": ssid,
+                "bssid": bssid,
+                "strength": strength,
+            })
+
+        available_networks.sort(key=lambda station: station["strength"], reverse=True)
+        return available_networks
+
+    @classmethod
+    def _build_connection_candidates(cls, available_networks):
+        candidates = []
+        for preference in cls.preferred_networks:
+            if not isinstance(preference, dict):
+                continue
+            preferred_ssid = preference.get("ssid")
+            if preferred_ssid is None:
+                continue
+            for network_info in available_networks:
+                if preferred_ssid != network_info["ssid"]:
+                    continue
+                candidates.append({
+                    "ssid": network_info["ssid"],
+                    "bssid": network_info["bssid"],
+                    "password": preference.get("password", ""),
+                    "enables_webrepl": preference.get("enables_webrepl", False),
+                })
+        return candidates
+
+    @classmethod
+    def _notify_connection_success(cls, connection_data):
+        try:
+            ifconfig = cls.wlan().ifconfig()
+            ip = ifconfig[0] if ifconfig else "unknown"
+            cls._notify_connection_change("connected", ssid=connection_data["ssid"], ip=ip)
+        except (AttributeError, IndexError, OSError, TypeError) as error:
+            log.warning(f"Failed to notify connection: {error}")
+
+    @classmethod
+    def _connect_candidates(cls, candidates):
+        for connection_data in candidates:
+            log.info("Attempting to connect to network {0}...".format(connection_data["ssid"]))
+            if not cls.connect_to(
+                ssid=connection_data["ssid"],
+                password=connection_data["password"],
+                bssid=connection_data["bssid"],
+            ):
+                continue
+            log.info("Successfully connected {0}".format(connection_data["ssid"]))
+            cls.webrepl_triggered = connection_data["enables_webrepl"]
+            cls._notify_connection_success(connection_data)
+            return True
+        return False
+
+    @classmethod
+    def _notify_connection_failure(cls, candidates):
+        try:
+            failed_ssids = [candidate["ssid"] for candidate in candidates]
+            if not failed_ssids:
+                failed_ssids = [
+                    item.get("ssid")
+                    for item in cls.preferred_networks
+                    if isinstance(item, dict) and item.get("ssid")
+                ]
+            cls._notify_connection_change("connection_failed", attempted_networks=failed_ssids)
+        except (AttributeError, TypeError, ValueError) as error:
+            log.warning(f"Failed to notify connection failure: {error}")
+
+    @classmethod
+    def _notify_access_point_started(cls, ap_settings):
+        try:
+            essid = ap_settings.get("essid", "unknown")
+            cls._notify_connection_change("ap_started", essid=essid)
+        except (AttributeError, TypeError, ValueError) as error:
+            log.warning(f"Failed to notify AP start: {error}")
+
+    @classmethod
+    def _configure_access_point(cls):
+        cls._ap_start_policy = cls.ap_config.get("start_policy", "never")
+        should_start_ap = cls.wants_accesspoint()
+
+        try:
+            access_point = cls.accesspoint()
+            access_point.active(should_start_ap)
+            if should_start_ap:
+                log.info("Enabling your access point...")
+                ap_settings = cls.ap_config.get("config", {})
+                if ap_settings:
+                    access_point.config(**ap_settings)
+                cls.webrepl_triggered = cls.ap_config.get("enables_webrepl", False)
+                cls._notify_access_point_started(ap_settings)
+            access_point.active(should_start_ap)
+        except (AttributeError, KeyError, OSError, TypeError, ValueError) as error:
+            log.error("Failed to configure access point: {}".format(error))
+
+    @classmethod
+    def _start_webrepl_if_requested(cls):
+        if not cls.webrepl_triggered:
+            return
+        if webrepl is None:
+            log.warning("Could not start WebREPL: module unavailable")
+            return
+        try:
+            webrepl.start()
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as error:
+            log.warning(f"Could not start WebREPL: {error}")
+
+    @staticmethod
+    def _extract_request_body(request):
+        body_separator = "\r\n\r\n"
+        body_index = request.find(body_separator)
+        if body_index < 0:
+            return None
+        return request[body_index + len(body_separator):]
+
+    @classmethod
+    def _load_existing_config(cls):
+        try:
+            with open(cls.config_file, "r") as config_file:
+                return json.load(config_file)
+        except (OSError, TypeError, ValueError):
+            return {}
+
+    @classmethod
+    def _normalise_persisted_config(cls, config):
+        preferred_networks, ap_config, server_config, schema = cls._normalise_loaded_config(config)
+        normalized = dict(config)
+        normalized["known_networks"] = preferred_networks
+        normalized["access_point"] = ap_config
+        if "config_server" in normalized or server_config:
+            normalized["config_server"] = server_config
+        if "schema" in normalized:
+            normalized["schema"] = schema
+        return normalized
+
+    @classmethod
+    def _handle_config_post_request(cls, request):
+        body = cls._extract_request_body(request)
+        if body is None:
+            return cls._build_http_response("400 Bad Request", "No request body")
+
+        try:
+            config = json.loads(body)
+        except (TypeError, ValueError) as error:
+            return cls._build_http_response("400 Bad Request", "Invalid JSON: {}".format(error))
+
+        try:
+            existing_config = cls._load_existing_config()
+            config_to_save = cls._merge_masked_config(config, existing_config)
+            config_to_save = cls._normalise_persisted_config(config_to_save)
+        except (TypeError, ValueError) as error:
+            return cls._build_http_response(
+                "400 Bad Request",
+                "Invalid configuration: {}".format(error),
+            )
+
+        try:
+            with open(cls.config_file, "w") as config_file:
+                config_file.write(json.dumps(config_to_save))
+        except OSError as error:
+            return cls._build_http_response(
+                "500 Internal Server Error",
+                "Failed to save config: {}".format(error),
+            )
+
+        log.info("Configuration updated via web interface")
+        cls.setup_network()
+        return cls._build_http_response(cls._http_status_ok, "Configuration updated successfully")
+
+    @classmethod
+    def _handle_config_get_request(cls):
+        try:
+            with open(cls.config_file, "r") as config_file:
+                data = json.dumps(cls._mask_passwords(json.load(config_file)))
+        except (OSError, TypeError, ValueError) as error:
+            return cls._build_http_response(
+                "500 Internal Server Error",
+                "Could not read config: {}".format(error),
+            )
+
+        return cls._build_http_response(
+            cls._http_status_ok,
+            data,
+            content_type="application/json",
+        )
+
+    @classmethod
+    def setup_network(cls) -> bool:
+        cls._load_config()
         # set things up
         cls.webrepl_triggered = False  # Until something wants it
         cls.wlan().active(True)
 
-        # scan what's available
-        available_networks = []
-        try:
-            scan_results = cls.wlan().scan()
-            for network in scan_results:
-                try:
-                    ssid = network[0].decode("utf-8")
-                    bssid = network[1]
-                    strength = network[3]
-                    available_networks.append(dict(ssid=ssid, bssid=bssid, strength=strength))
-                except (IndexError, UnicodeDecodeError) as e:
-                    log.warning("Failed to parse network scan result: {}".format(e))
-                    continue
-        except OSError as e:
-            log.error("Network scan failed: {}".format(e))
+        available_networks = cls._scan_available_networks()
+        if available_networks is None:
             return False
-        # Sort fields by strongest first in case of multiple SSID access points
-        available_networks.sort(key=lambda station: station["strength"], reverse=True)
 
-        # Get the ranked list of BSSIDs to connect to, ranked by preference and strength amongst duplicate SSID
-        candidates = []
-        for aPreference in cls.preferred_networks:
-            for aNetwork in available_networks:
-                if aPreference["ssid"] == aNetwork["ssid"]:
-                    connection_data = {
-                        "ssid": aNetwork["ssid"],
-                        "bssid": aNetwork["bssid"],  # NB: One day we might allow collection by exact BSSID
-                        "password": aPreference["password"],
-                        "enables_webrepl": aPreference["enables_webrepl"]}
-                    candidates.append(connection_data)
+        candidates = cls._build_connection_candidates(available_networks)
+        connected = cls._connect_candidates(candidates)
+        if not connected:
+            cls._notify_connection_failure(candidates)
 
-        connected = False
-        for new_connection in candidates:
-            log.info("Attempting to connect to network {0}...".format(new_connection["ssid"]))
-            # Micropython 1.9.3+ supports BSSID specification so let's use that
-            if cls.connect_to(ssid=new_connection["ssid"], password=new_connection["password"],
-                              bssid=new_connection["bssid"]):
-                log.info("Successfully connected {0}".format(new_connection["ssid"]))
-                cls.webrepl_triggered = new_connection["enables_webrepl"]
-                
-                # Notify successful connection
-                try:
-                    ifconfig = cls.wlan().ifconfig()
-                    ip = ifconfig[0] if ifconfig else "unknown"
-                    cls._notify_connection_change("connected", ssid=new_connection["ssid"], ip=ip)
-                except Exception as e:
-                    log.warning(f"Failed to notify connection: {e}")
-                
-                connected = True
-                break  # We are connected so don't try more
-        
-        # If no connection was successful and we have candidates, notify failure
-        if not connected and candidates:
-            try:
-                failed_ssids = [c["ssid"] for c in candidates]
-                cls._notify_connection_change("connection_failed", attempted_networks=failed_ssids)
-            except Exception as e:
-                log.warning(f"Failed to notify connection failure: {e}")
-
-
-        # Check if we are to start the access point
-        cls._ap_start_policy = cls.ap_config.get("start_policy", "never")
-        should_start_ap = cls.wants_accesspoint()
-        try:
-            cls.accesspoint().active(should_start_ap)
-            if should_start_ap:  # Only bother setting the config if it WILL be active
-                log.info("Enabling your access point...")
-                cls.accesspoint().config(**cls.ap_config["config"])
-                cls.webrepl_triggered = cls.ap_config["enables_webrepl"]
-                
-                # Notify AP started
-                try:
-                    essid = cls.ap_config["config"].get("essid", "unknown")
-                    cls._notify_connection_change("ap_started", essid=essid)
-                except Exception as e:
-                    log.warning(f"Failed to notify AP start: {e}")
-                    
-            cls.accesspoint().active(cls.wants_accesspoint())  # It may be DEACTIVATED here
-        except OSError as e:
-            log.error("Failed to configure access point: {}".format(e))
-
-        # may need to reload the config if access points trigger it
-
-        # start the webrepl according to the rules
-        if cls.webrepl_triggered:
-            try:
-                webrepl.start()
-            except (NameError, TypeError) as e:
-                log.warning(f"Could not start WebREPL: {e}")
+        cls._configure_access_point()
+        cls._start_webrepl_if_requested()
 
         # return the success status, which is ultimately if we connected to managed and not ad hoc wifi.
         return cls.wlan().isconnected()
@@ -306,14 +669,14 @@ loadConfig();
             log.error("Failed to initiate connection to {}: {}".format(ssid, e))
             return False
 
-        for check in range(0, 10):  # Wait a maximum of 10 times (10 * 500ms = 5 seconds) for success
+        for _ in range(0, 10):  # Wait a maximum of 10 times (10 * 500ms = 5 seconds) for success
             try:
                 if cls.wlan().isconnected():
                     return True
             except OSError as e:
                 log.warning("Connection check failed for {}: {}".format(ssid, e))
                 break
-            time.sleep_ms(500)
+            cls._sleep_ms(500)
         return False
 
     @classmethod
@@ -325,22 +688,25 @@ loadConfig();
         auth_header = None
         for line in request.split('\r\n'):
             if line.lower().startswith('authorization: basic '):
-                auth_header = line.split(' ', 2)[2]
+                auth_header = line.split(' ', 2)[2].strip()
                 break
         
         if not auth_header:
             return False
             
         try:
-            # Decode base64 credentials
-            import ubinascii
-            decoded = ubinascii.a2b_base64(auth_header).decode()
-            if ':' in decoded:
-                username, password = decoded.split(':', 1)
-                return username == "admin" and password == cls._config_server_password
-        except:
-            pass
-        return False
+            try:
+                import ubinascii as binascii
+            except ImportError:
+                import binascii
+            decoded = binascii.a2b_base64(auth_header).decode()
+        except (TypeError, UnicodeError, ValueError):
+            return False
+
+        if ':' not in decoded:
+            return False
+        username, password = decoded.split(':', 1)
+        return username == "admin" and password == cls._config_server_password
 
     @classmethod
     def _handle_config_request(cls, request: str) -> str:
@@ -354,118 +720,39 @@ loadConfig();
         unless password is None or empty (in which case auth is skipped).
         """
         # 1) Authentication
-        if cls._config_server_password:
-            # look for “Authorization: Basic …”
-            auth = None
-            for line in request.split('\r\n'):
-                if line.lower().startswith("authorization: basic "):
-                    auth = line.split(" ", 2)[2]
-                    break
-            if not auth:
-                return (
-                    "HTTP/1.1 401 Unauthorized\r\n"
-                    "WWW-Authenticate: Basic realm=\"WiFi Config\"\r\n"
-                    "Content-Type: text/plain\r\n"
-                    "\r\n"
-                    "Authentication required"
-                )
-            # decode and verify
-            try:
-                import ubinascii
-                user_pass = ubinascii.a2b_base64(auth).decode()
-                user, pwd = user_pass.split(":", 1)
-                if user != "admin" or pwd != cls._config_server_password:
-                    raise ValueError
-            except Exception:
-                return (
-                    "HTTP/1.1 401 Unauthorized\r\n"
-                    "WWW-Authenticate: Basic realm=\"WiFi Config\"\r\n"
-                    "Content-Type: text/plain\r\n"
-                    "\r\n"
-                    "Invalid credentials"
-                )
-
-        # 2) POST /config → update config
-        if request.startswith("POST /config"):
-            # extract body
-            idx = request.find("\r\n\r\n")
-            if idx < 0:
-                return "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nNo request body"
-            body = request[idx+4:]
-            # parse JSON
-            try:
-                import json
-                cfg = json.loads(body)
-                if "known_networks" not in cfg or "access_point" not in cfg:
-                    raise ValueError("Missing required keys")
-            except ValueError as ve:
-                return (
-                    "HTTP/1.1 400 Bad Request\r\n"
-                    "Content-Type: text/plain\r\n"
-                    f"\r\nInvalid JSON: {ve}"
-                )
-            except Exception as e:
-                return (
-                    "HTTP/1.1 400 Bad Request\r\n"
-                    "Content-Type: text/plain\r\n"
-                    f"\r\nJSON parse error: {e}"
-                )
-            # write file
-            try:
-                with open(cls.config_file, "w") as f:
-                    f.write(body)
-                log.info("Configuration updated via web interface")
-                # reconfigure network immediately
-                try:
-                    cls.setup_network()
-                except Exception as e:
-                    log.warning(f"Network re-setup failed: {e}")
-                return "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nConfiguration updated successfully"
-            except Exception as e:
-                return (
-                    "HTTP/1.1 500 Internal Server Error\r\n"
-                    "Content-Type: text/plain\r\n"
-                    f"\r\nFailed to save config: {e}"
-                )
-
-        # 3) GET /config → serve JSON
-        if request.startswith("GET /config"):
-            try:
-                with open(cls.config_file, "r") as f:
-                    data = f.read()
-                return (
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: application/json\r\n"
-                    "\r\n"
-                    f"{data}"
-                )
-            except Exception as e:
-                return (
-                    "HTTP/1.1 500 Internal Server Error\r\n"
-                    "Content-Type: text/plain\r\n"
-                    f"\r\nCould not read config: {e}"
-                )
-
-        # 4) GET / or /index → serve HTML editor
-        if request.startswith("GET / ") or "GET /index" in request:
-            return (
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/html\r\n"
-                "\r\n"
-                f"{cls._config_html}"
+        if not cls._check_basic_auth(request):
+            return cls._build_http_response(
+                "401 Unauthorized",
+                "Authentication required",
+                extra_headers=['WWW-Authenticate: Basic realm="WiFi Config"'],
             )
 
-        # 5) anything else → 404
-        return (
-            "HTTP/1.1 404 Not Found\r\n"
-            "Content-Type: text/plain\r\n"
-            "\r\n"
-            "Not found"
-        )
+        request_line = request.split("\r\n", 1)[0]
+        request_parts = request_line.split(" ", 2)
+        if len(request_parts) < 2:
+            return cls._build_http_response("404 Not Found", "Not found")
+
+        method, path = request_parts[0], request_parts[1]
+
+        if method == "POST" and path == "/config":
+            return cls._handle_config_post_request(request)
+
+        if method == "GET" and path == "/config":
+            return cls._handle_config_get_request()
+
+        if method == "GET" and path in ("/", "/index"):
+            return cls._build_http_response(
+                cls._http_status_ok,
+                cls._config_html,
+                content_type="text/html",
+            )
+
+        return cls._build_http_response("404 Not Found", "Not found")
 
     @classmethod
     async def _run_config_server(cls):
         """Run the configuration web server"""
+        server_socket = None
         try:
             import socket
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -479,44 +766,59 @@ loadConfig();
             while cls._config_server_enabled:
                 try:
                     conn, addr = server_socket.accept()
-                    log.debug(f"Config server connection from {addr}")
-                    
-                    # Read request with timeout
-                    conn.settimeout(5.0)
-                    request = conn.recv(4096).decode()
-                    
-                    # Handle request
-                    response = cls._handle_config_request(request)
-                    
-                    # Send response
-                    conn.send(response.encode())
-                    conn.close()
-                    
                 except OSError:
                     # Timeout or no connection - yield control
-                    await asyncio.sleep_ms(100)
+                    await cls._sleep_async_ms(100)
+                    continue
+
+                try:
+                    log.debug(f"Config server connection from {addr}")
+
+                    # Read request with timeout
+                    conn.settimeout(5.0)
+                    request = cls._read_http_request(conn)
+
+                    # Handle request
+                    response = cls._handle_config_request(request)
+
+                    # Send response
+                    cls._send_http_response(conn, response)
                 except Exception as e:
                     log.warning(f"Config server request error: {e}")
-                    
-            server_socket.close()
+                finally:
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+
             log.info("Config server stopped")
             
-        except Exception as e:
+        except OSError as e:
             log.error(f"Config server failed to start: {e}")
+            cls._config_server_enabled = False
+        finally:
+            if server_socket is not None:
+                try:
+                    server_socket.close()
+                except OSError:
+                    pass
+            cls._config_server_task = None
 
     @classmethod
     def start_config_server(cls, password="micropython"):
         """Start the configuration web server"""
-        if not asyncio:
+        if asyncio is None:
             log.error("Config server requires asyncio")
             return False
             
         cls._config_server_password = password
-        cls._config_server_enabled = True
+        if cls._config_server_enabled and cls._config_server_task is not None:
+            return True
         
         # Start server as async task
-        loop = asyncio.get_event_loop()
-        loop.create_task(cls._run_config_server())
+        cls._config_server_enabled = True
+        loop = cls._get_event_loop()
+        cls._config_server_task = loop.create_task(cls._run_config_server())
         
         log.info("Config server starting on http://[device-ip]:8080")
         return True
@@ -568,7 +870,8 @@ loadConfig();
                 log.warning(f"Connection callback error: {e}")
         
         # Update last known state for state change detection
-        cls._last_connection_state = event
+        if event in ("connected", "disconnected"):
+            cls._last_connection_state = event
 
     @classmethod
     def _check_and_notify_connection_state(cls):
@@ -589,8 +892,8 @@ loadConfig();
                         config = cls.wlan().config('ssid')
                         if config:
                             ssid = config
-                    except:
-                        pass
+                    except (AttributeError, KeyError, OSError, TypeError, ValueError) as error:
+                        log.debug(f"Failed to read connected SSID: {error}")
                     
                     cls._notify_connection_change("connected", ssid=ssid, ip=ip)
                 else:

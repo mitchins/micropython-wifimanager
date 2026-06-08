@@ -14,21 +14,20 @@ class AbstractNetwork:
         self.is_active = False
 
     def active(self, *args):
-        if len(args) > 0:
+        if args:
             self.is_active = args[0]
         else:
             return self.is_active
 
     def config(self, *args, **kwargs):
-        if len(kwargs) > 0:
-            for key in kwargs.keys():
-                self.config_dict[key] = kwargs[key]
+        if kwargs:
+            self.config_dict.update(kwargs)
         elif len(args) == 1:
             return self.config_dict[args[0]]
 
 
 # The client access interface
-class STA_IF(AbstractNetwork):
+class StaIf(AbstractNetwork):
     def __init__(self):
         AbstractNetwork.__init__(self)
         self.scan_results = []
@@ -38,7 +37,7 @@ class STA_IF(AbstractNetwork):
         self.DEBUG_CONNECTED_BSSID = None
 
     #def connect(self, ssid, key=None, **kwargs):
-    def connect(self, ssid, key=None, *, bssid):
+    def connect(self, ssid, _key=None, *, bssid):
         for network in self.scan_results:
             should_connect = network[0].decode('utf-8') == ssid and \
                 (bssid is None or bssid == network[1])
@@ -55,6 +54,16 @@ class STA_IF(AbstractNetwork):
     def isconnected(self):
         return self.connected
 
+    def ifconfig(self):
+        if self.connected:
+            return ("192.168.1.100", "255.255.255.0", "192.168.1.1", "8.8.8.8")
+        return ("0.0.0.0", "0.0.0.0", "0.0.0.0", "0.0.0.0")
+
+    def config(self, *args, **kwargs):
+        if len(args) == 1 and args[0] == 'ssid':
+            return self.DEBUG_CONNECTED_SSID
+        return AbstractNetwork.config(self, *args, **kwargs)
+
     def status(self):
         # "STAT_IDLE" "STAT_CONNECTING" "STAT_WRONG_PASSWORD" "STAT_NO_AP_FOUND" "STAT_CONNECT_FAIL" "STAT_GOT_IP"
         if self.connected:
@@ -64,19 +73,25 @@ class STA_IF(AbstractNetwork):
 
 
 # The adhoc access point master
-class AP_IF(AbstractNetwork):
+class ApIf(AbstractNetwork):
     def __init__(self):
         AbstractNetwork.__init__(self)
 
 
 # Function to imitate the micropython network factory
+STA_IF = StaIf
+AP_IF = ApIf
 interfaces = {STA_IF: STA_IF(), AP_IF: AP_IF()}
 
 
-def WLAN(kind):
+def wlan(kind):
     return interfaces[kind]
 
 
-def DEBUG_RESET():
+def debug_reset():
     interfaces[STA_IF] = STA_IF()
     interfaces[AP_IF] = AP_IF()
+
+
+WLAN = wlan
+DEBUG_RESET = debug_reset

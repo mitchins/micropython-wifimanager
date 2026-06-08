@@ -4,10 +4,8 @@ Can be run on a regular Python installation to test the web interface
 """
 
 import json
-import threading
-import time
+import base64
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import urllib.parse
 
 # Mock the wifi_manager for testing
 class MockWifiManager:
@@ -56,14 +54,13 @@ class MockWifiManager:
             return False
             
         try:
-            import base64
             encoded = auth_header.split(' ', 1)[1]
             decoded = base64.b64decode(encoded).decode()
             if ':' in decoded:
                 username, password = decoded.split(':', 1)
                 return username == "admin" and password == cls._config_server_password
-        except:
-            pass
+        except (TypeError, UnicodeDecodeError, ValueError):
+            return False
         return False
 
 # Test HTTP server
@@ -139,7 +136,7 @@ loadConfig();
                 post_data = self.rfile.read(content_length).decode()
                 
                 # Validate JSON
-                config = json.loads(post_data)
+                json.loads(post_data)
                 
                 # Save config
                 with open(MockWifiManager.config_file, 'w') as f:

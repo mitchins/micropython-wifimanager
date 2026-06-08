@@ -1,7 +1,8 @@
 # micropython-wifimanager
-A simple network configuration utility for MicroPython on boards such as ESP8266 and ESP32.
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=mitchins_micropython-wifimanager&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=mitchins_micropython-wifimanager)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=mitchins_micropython-wifimanager&metric=coverage)](https://sonarcloud.io/summary/new_code?id=mitchins_micropython-wifimanager)
 
-> Maintenance refresh: release metadata is now kept in sync as v1.0.3.
+A simple network configuration utility for MicroPython on boards such as ESP8266 and ESP32.
 
 #### Test Start
 
