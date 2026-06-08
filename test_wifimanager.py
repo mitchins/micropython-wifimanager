@@ -170,6 +170,28 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.assertEqual(self.manager.ap_config["config"]["essid"], "MicroPython-AP")
         start_server.assert_called_once_with(self.manager._config_server_password)
 
+    def test_load_config_allows_older_schema_values(self):
+        config_path = self._make_temp_config({
+            "schema": 1,
+            "known_networks": [],
+            "access_point": {"config": {"essid": "AP"}},
+        })
+        self.manager.config_file = config_path
+
+        self.assertTrue(self.manager._load_config())
+
+    def test_normalise_loaded_config_rejects_invalid_shapes(self):
+        with self.assertRaises(ValueError):
+            self.manager._normalise_loaded_config([])
+        with self.assertRaises(ValueError):
+            self.manager._normalise_loaded_config({"known_networks": []})
+        with self.assertRaises(ValueError):
+            self.manager._normalise_loaded_config({
+                "known_networks": [],
+                "access_point": {"config": {"essid": "AP"}},
+                "config_server": "bad",
+            })
+
     def test_check_basic_auth_accepts_valid_credentials(self):
         self.manager._config_server_password = "secret"
         request = self._auth_request("GET", "/config", "secret")
@@ -304,6 +326,65 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.assertEqual(stored["access_point"]["config"]["essid"], "AP")
         setup_network.assert_not_called()
 
+    def test_handle_config_post_request_requires_body_separator(self):
+        self.manager._config_server_password = "secret"
+        request = "POST /config HTTP/1.1\r\nAuthorization: Basic ignored"
+
+        response = self.manager._handle_config_post_request(request)
+
+        self.assertIn("400 Bad Request", response)
+        self.assertIn("No request body", response)
+
+    def test_handle_config_post_request_rejects_invalid_json(self):
+        self.manager._config_server_password = "secret"
+        response = self.manager._handle_config_post_request(
+            self._auth_request("POST", "/config", "secret", "{")
+        )
+
+        self.assertIn("400 Bad Request", response)
+        self.assertIn("Invalid JSON", response)
+
+    def test_handle_config_post_request_returns_500_when_write_fails(self):
+        self.manager._config_server_password = "secret"
+        payload = json.dumps({
+            "schema": 2,
+            "known_networks": [],
+            "access_point": {
+                "config": {"essid": "AP", "password": "ap-pass"},
+                "enables_webrepl": False,
+                "start_policy": "never",
+            },
+        })
+
+        with patch.object(self.manager, "_load_existing_config", return_value={}):
+            with patch("builtins.open", side_effect=OSError("disk full")):
+                with patch.object(self.manager, "setup_network", return_value=True) as setup_network:
+                    response = self.manager._handle_config_post_request(
+                        self._auth_request("POST", "/config", "secret", payload)
+                    )
+
+        self.assertIn("500 Internal Server Error", response)
+        self.assertIn("Failed to save config", response)
+        setup_network.assert_not_called()
+
+    def test_normalise_persisted_config_keeps_config_server_when_present(self):
+        normalized = self.manager._normalise_persisted_config({
+            "schema": 2,
+            "known_networks": [],
+            "access_point": {
+                "essid": "FlatAP",
+                "password": "flatpass",
+            },
+            "config_server": {
+                "enabled": True,
+                "password": "secret",
+            },
+        })
+
+        self.assertEqual(normalized["access_point"]["config"]["essid"], "FlatAP")
+        self.assertTrue(normalized["config_server"]["enabled"])
+        self.assertEqual(normalized["config_server"]["password"], "secret")
+
     def test_merge_masked_config_preserves_non_network_lists_by_position(self):
         merged = self.manager._merge_masked_config(
             {"tokens": [{"password": "***"}, {"password": "fresh"}]},
@@ -317,6 +398,13 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.manager._config_server_password = "secret"
         response = self.manager._handle_config_request("GET /config HTTP/1.1\r\n\r\n")
         self.assertIn("401 Unauthorized", response)
+
+    def test_handle_config_request_returns_404_for_malformed_request_line(self):
+        self.manager._config_server_password = ""
+
+        response = self.manager._handle_config_request("BROKEN\r\n\r\n")
+
+        self.assertIn("404 Not Found", response)
 
     def test_handle_config_request_routes_exact_paths_only(self):
         self.manager._config_server_password = ""
@@ -339,6 +427,34 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.assertIn("200 OK", index_response)
         self.assertIn("404 Not Found", near_miss_response)
         self.assertIn("404 Not Found", config_near_miss_response)
+
+    def test_handle_config_get_request_returns_500_when_read_fails(self):
+        with patch("builtins.open", side_effect=OSError("missing")):
+            response = self.manager._handle_config_get_request()
+
+        self.assertIn("500 Internal Server Error", response)
+        self.assertIn("Could not read config", response)
+
+    def test_check_basic_auth_rejects_invalid_base64_and_missing_separator(self):
+        self.manager._config_server_password = "secret"
+        missing_separator = "GET /config HTTP/1.1\r\nAuthorization: Basic %s\r\n\r\n" % (
+            base64.b64encode(b"adminonly").decode()
+        )
+
+        self.assertFalse(self.manager._check_basic_auth(missing_separator))
+
+    def test_check_basic_auth_rejects_decode_errors(self):
+        self.manager._config_server_password = "secret"
+
+        class FakeBinascii:
+            @staticmethod
+            def a2b_base64(_value):
+                raise ValueError("bad base64")
+
+        request = "GET /config HTTP/1.1\r\nAuthorization: Basic broken\r\n\r\n"
+
+        with patch.dict(sys.modules, {"ubinascii": FakeBinascii}):
+            self.assertFalse(self.manager._check_basic_auth(request))
 
     def test_read_http_request_and_send_http_response(self):
         request = (
@@ -365,6 +481,18 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.assertIn("Content-Length: 5", received)
         self.assertTrue(received.endswith("hello"))
 
+    def test_read_http_request_tolerates_invalid_content_length(self):
+        request = (
+            b"POST /config HTTP/1.1\r\nContent-Length: nope\r\n\r\n",
+        )
+
+        received = self.manager._read_http_request(FakeReceiveConnection(request))
+
+        self.assertIn("Content-Length: nope", received)
+
+    def test_parse_content_length_defaults_to_zero_when_missing(self):
+        self.assertEqual(self.manager._parse_content_length("Host: test\r\nAccept: */*"), 0)
+
     def test_read_http_request_rejects_oversized_requests(self):
         oversized = (
             b"POST /config HTTP/1.1\r\nContent-Length: 20000\r\n\r\n",
@@ -372,6 +500,9 @@ class WifiManagerHelperTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             self.manager._read_http_request(FakeReceiveConnection(oversized))
+
+    def test_read_http_request_returns_empty_when_connection_closes_immediately(self):
+        self.assertEqual(self.manager._read_http_request(FakeReceiveConnection([])), "")
 
     def test_scan_available_networks_sorts_and_skips_invalid_entries(self):
         interface = fake_network.WLAN(fake_network.STA_IF)
@@ -385,6 +516,24 @@ class WifiManagerHelperTests(unittest.TestCase):
 
         self.assertEqual([network["ssid"] for network in networks], ["Office", "HomeNetwork"])
 
+    def test_scan_available_networks_handles_scan_errors(self):
+        class ErrorScanWlan:
+            @staticmethod
+            def scan():
+                raise OSError("scan failed")
+
+        with patch.object(self.manager, "wlan", return_value=ErrorScanWlan()):
+            self.assertIsNone(self.manager._scan_available_networks())
+
+    def test_scan_available_networks_handles_non_iterable_results(self):
+        class NonIterableScanWlan:
+            @staticmethod
+            def scan():
+                return None
+
+        with patch.object(self.manager, "wlan", return_value=NonIterableScanWlan()):
+            self.assertEqual(self.manager._scan_available_networks(), [])
+
     def test_build_connection_candidates_skips_non_dict_preferences(self):
         self.manager.preferred_networks = [
             "HomeNetwork",
@@ -397,3 +546,63 @@ class WifiManagerHelperTests(unittest.TestCase):
 
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["ssid"], "Office")
+
+    def test_build_connection_candidates_skips_preferences_without_ssid(self):
+        self.manager.preferred_networks = [
+            {"password": "secret"},
+        ]
+
+        candidates = self.manager._build_connection_candidates([
+            {"ssid": "Office", "bssid": b"\x01\x02\x03\x04\x05\x06", "strength": -20},
+        ])
+
+        self.assertEqual(candidates, [])
+
+    def test_setup_network_returns_false_when_scan_fails(self):
+        with patch.object(self.manager, "_load_config", return_value=True):
+            with patch.object(self.manager, "_scan_available_networks", return_value=None):
+                result = self.manager.setup_network()
+
+        self.assertFalse(result)
+
+    def test_connect_to_returns_false_on_connect_error(self):
+        class FailingConnectWlan:
+            @staticmethod
+            def connect(_ssid, _password, **_kwargs):
+                raise OSError("boom")
+
+        with patch.object(self.manager, "wlan", return_value=FailingConnectWlan()):
+            self.assertFalse(self.manager.connect_to(ssid="HomeNetwork", password="secret", bssid=None))
+
+    def test_connect_to_returns_false_when_status_check_errors(self):
+        class FailingCheckWlan:
+            @staticmethod
+            def connect(_ssid, _password, **_kwargs):
+                return None
+
+            @staticmethod
+            def isconnected():
+                raise OSError("boom")
+
+        with patch.object(self.manager, "wlan", return_value=FailingCheckWlan()):
+            self.assertFalse(self.manager.connect_to(ssid="HomeNetwork", password="secret", bssid=None))
+
+    def test_connect_to_waits_and_succeeds_after_retry(self):
+        class EventuallyConnectedWlan:
+            def __init__(self):
+                self.attempts = 0
+
+            @staticmethod
+            def connect(_ssid, _password, **_kwargs):
+                return None
+
+            def isconnected(self):
+                self.attempts += 1
+                return self.attempts >= 2
+
+        wlan = EventuallyConnectedWlan()
+        with patch.object(self.manager, "wlan", return_value=wlan):
+            with patch.object(self.manager, "_sleep_ms") as sleep_ms:
+                self.assertTrue(self.manager.connect_to(ssid="HomeNetwork", password="secret", bssid=None))
+
+        sleep_ms.assert_called_once_with(500)
