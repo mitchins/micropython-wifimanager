@@ -180,6 +180,55 @@ WifiManager.start_config_server("your-password")
 - Works with any modern browser
 - Integrated with async event loop
 
+#### Optional defensive AP-mode honeypot plugin
+
+If you only need passive AP tripwire behavior, add the optional `honeypot_ap.py` plugin without
+changing the library itself. The plugin listens for `ap_started` and serves a minimal, static landing
+page while logging probe traffic.
+
+Example:
+
+```python
+import uasyncio as asyncio
+import logging
+
+from wifi_manager import WifiManager
+from honeypot_ap import HoneypotAP
+
+logging.basicConfig(level=logging.INFO)
+
+HoneypotAP.install(
+    WifiManager,
+    log_file="/honeypot.log",
+    port=80,
+    banner_name="ESP Sensor Gateway",
+)
+
+WifiManager.start_managing()
+asyncio.get_event_loop().run_forever()
+```
+
+The plugin is intentionally defensive:
+
+- No credential collection.
+- No routing or upstream proxying.
+- No changes to `access_point` policy or reconnect logic in `WifiManager`.
+- No dependency on `config_server`.
+
+Disable trap teardown on STA connect by installing with:
+
+```python
+HoneypotAP.install(WifiManager, stop_on_connected=False)
+```
+
+Logs include timestamp, peer IP, method, path, and user agent:
+
+```text
+1710000000    192.168.4.2    GET    /    Mozilla/5.0 ...
+1710000004    192.168.4.2    GET    /generate_204    Android ...
+1710000005    192.168.4.3    GET    /hotspot-detect    CaptiveNetworkSupport ...
+```
+
 #### Connection state callbacks
 
 WifiManager can notify your application when the WiFi connection state changes, allowing you to respond to connectivity events in real-time.
