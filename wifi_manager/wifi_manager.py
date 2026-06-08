@@ -65,6 +65,7 @@ class WifiManager:
     _last_connection_state = None
     _masked_password = "***"
     _max_request_bytes = 16384
+    _http_status_ok = "200 OK"
     
     # Minimal HTML for config interface
     _config_html = """<!DOCTYPE html>
@@ -275,27 +276,74 @@ loadConfig();
         return merged
 
     @classmethod
+    def _merge_masked_dict_value(cls, key, value, existing):
+        if key == "known_networks" and isinstance(value, list):
+            return cls._merge_masked_networks(value, existing.get(key))
+        if key == "password" and value == cls._masked_password:
+            return existing.get(key, "")
+        return cls._merge_masked_config(value, existing.get(key))
+
+    @classmethod
+    def _merge_masked_dict(cls, candidate, existing):
+        existing = existing if isinstance(existing, dict) else {}
+        merged = {}
+        for key, value in candidate.items():
+            merged[key] = cls._merge_masked_dict_value(key, value, existing)
+        return merged
+
+    @classmethod
+    def _merge_masked_list(cls, candidate, existing):
+        existing = existing if isinstance(existing, list) else []
+        merged = []
+        for index, value in enumerate(candidate):
+            existing_value = existing[index] if index < len(existing) else None
+            merged.append(cls._merge_masked_config(value, existing_value))
+        return merged
+
+    @classmethod
     def _merge_masked_config(cls, candidate, existing):
         if isinstance(candidate, dict):
-            existing = existing if isinstance(existing, dict) else {}
-            merged = {}
-            for key, value in candidate.items():
-                if key == "known_networks" and isinstance(value, list):
-                    merged[key] = cls._merge_masked_networks(value, existing.get(key))
-                    continue
-                if key == "password" and value == cls._masked_password:
-                    merged[key] = existing.get(key, "")
-                else:
-                    merged[key] = cls._merge_masked_config(value, existing.get(key))
-            return merged
+            return cls._merge_masked_dict(candidate, existing)
         if isinstance(candidate, list):
-            existing = existing if isinstance(existing, list) else []
-            merged = []
-            for index, value in enumerate(candidate):
-                existing_value = existing[index] if index < len(existing) else None
-                merged.append(cls._merge_masked_config(value, existing_value))
-            return merged
+            return cls._merge_masked_list(candidate, existing)
         return candidate
+
+    @classmethod
+    def _validate_request_size(cls, size):
+        if size > cls._max_request_bytes:
+            raise ValueError("Request too large")
+
+    @staticmethod
+    def _parse_content_length(headers):
+        for line in headers.split("\r\n"):
+            if not line.lower().startswith("content-length:"):
+                continue
+            try:
+                return int(line.split(":", 1)[1].strip())
+            except ValueError:
+                return 0
+        return 0
+
+    @classmethod
+    def _extract_request_metadata(cls, data, header_end, content_length):
+        if header_end >= 0:
+            return header_end, content_length
+
+        header_end = data.find(b"\r\n\r\n")
+        if header_end < 0:
+            return header_end, content_length
+
+        headers = data[:header_end].decode()
+        content_length = cls._parse_content_length(headers)
+        cls._validate_request_size(content_length)
+        return header_end, content_length
+
+    @staticmethod
+    def _has_complete_request(data, header_end, content_length):
+        if header_end < 0:
+            return False
+        body_length = len(data) - (header_end + 4)
+        return body_length >= content_length
 
     @classmethod
     def _read_http_request(cls, conn):
@@ -308,27 +356,12 @@ loadConfig();
             if not chunk:
                 break
             data += chunk
-            if len(data) > cls._max_request_bytes:
-                raise ValueError("Request too large")
-
-            if header_end < 0:
-                header_end = data.find(b"\r\n\r\n")
-                if header_end >= 0:
-                    headers = data[:header_end].decode()
-                    for line in headers.split("\r\n"):
-                        if line.lower().startswith("content-length:"):
-                            try:
-                                content_length = int(line.split(":", 1)[1].strip())
-                            except ValueError:
-                                content_length = 0
-                            break
-                    if content_length > cls._max_request_bytes:
-                        raise ValueError("Request too large")
-
-            if header_end >= 0:
-                body_length = len(data) - (header_end + 4)
-                if body_length >= content_length:
-                    break
+            cls._validate_request_size(len(data))
+            header_end, content_length = cls._extract_request_metadata(
+                data, header_end, content_length
+            )
+            if cls._has_complete_request(data, header_end, content_length):
+                break
 
         return data.decode()
 
@@ -573,7 +606,7 @@ loadConfig();
 
         log.info("Configuration updated via web interface")
         cls.setup_network()
-        return cls._build_http_response("200 OK", "Configuration updated successfully")
+        return cls._build_http_response(cls._http_status_ok, "Configuration updated successfully")
 
     @classmethod
     def _handle_config_get_request(cls):
@@ -586,7 +619,11 @@ loadConfig();
                 "Could not read config: {}".format(error),
             )
 
-        return cls._build_http_response("200 OK", data, content_type="application/json")
+        return cls._build_http_response(
+            cls._http_status_ok,
+            data,
+            content_type="application/json",
+        )
 
     @classmethod
     def setup_network(cls) -> bool:
@@ -648,9 +685,8 @@ loadConfig();
                 import ubinascii as binascii
             except ImportError:
                 import binascii
-            decode_error = getattr(binascii, "Error", ValueError)
             decoded = binascii.a2b_base64(auth_header).decode()
-        except (TypeError, UnicodeError, ValueError, decode_error):
+        except (TypeError, UnicodeError, ValueError):
             return False
 
         if ':' not in decoded:
@@ -687,7 +723,11 @@ loadConfig();
 
         # 4) GET / or /index → serve HTML editor
         if request.startswith("GET / ") or "GET /index" in request:
-            return cls._build_http_response("200 OK", cls._config_html, content_type="text/html")
+            return cls._build_http_response(
+                cls._http_status_ok,
+                cls._config_html,
+                content_type="text/html",
+            )
 
         # 5) anything else → 404
         return cls._build_http_response("404 Not Found", "Not found")

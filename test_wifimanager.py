@@ -273,6 +273,15 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.assertEqual(stored["known_networks"][0]["password"], "office-pass")
         self.assertEqual(stored["known_networks"][1]["password"], "home-pass")
 
+    def test_merge_masked_config_preserves_non_network_lists_by_position(self):
+        merged = self.manager._merge_masked_config(
+            {"tokens": [{"password": "***"}, {"password": "fresh"}]},
+            {"tokens": [{"password": "first"}, {"password": "second"}]},
+        )
+
+        self.assertEqual(merged["tokens"][0]["password"], "first")
+        self.assertEqual(merged["tokens"][1]["password"], "fresh")
+
     def test_handle_config_request_requires_auth(self):
         self.manager._config_server_password = "secret"
         response = self.manager._handle_config_request("GET /config HTTP/1.1\r\n\r\n")
@@ -290,6 +299,18 @@ class WifiManagerHelperTests(unittest.TestCase):
         self.assertIn("Content-Length: 5", received)
         self.assertTrue(received.endswith("hello"))
         self.assertEqual(sender.payload.decode(), "HTTP/1.1 200 OK\r\n\r\nhello")
+
+    def test_read_http_request_handles_split_headers(self):
+        request = (
+            b"POST /config HTTP/1.1\r\nHost: te",
+            b"st\r\nContent-Length: 5\r\n\r\nhel",
+            b"lo",
+        )
+
+        received = self.manager._read_http_request(FakeReceiveConnection(request))
+
+        self.assertIn("Content-Length: 5", received)
+        self.assertTrue(received.endswith("hello"))
 
     def test_read_http_request_rejects_oversized_requests(self):
         oversized = (
